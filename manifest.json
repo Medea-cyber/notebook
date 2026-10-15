@@ -1,0 +1,11 @@
+{
+    "display_name": "Блокнот рассказчика",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Valentina",
+    "version": "0.7.5",
+    "homePage": ""
+}
