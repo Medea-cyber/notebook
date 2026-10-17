@@ -36,3 +36,8 @@
 #nnb_panel .nnb-npc-text { white-space: pre-wrap; word-break: break-word; }
 #nnb_panel .nnb-stage { letter-spacing: 2px; font-size: 0.9em; }
 #nnb_panel .nnb-arc { border-left: 3px solid var(--SmartThemeQuoteColor, #6a6); }
+#nnb_panel .nnb-time-now { font-weight: bold; margin: 4px 0 6px; }
+#nnb_panel .nnb-time-row { flex-wrap: wrap; }
+#nnb_panel .nnb-time-row .menu_button { padding: 4px 8px; margin: 0; }
+#nnb_panel input.nnb-date { width: auto; flex: 1 1 140px; }
+#nnb_panel input.nnb-city { flex: 1 1 120px; width: auto; }
