@@ -90,416 +90,795 @@ const GENRE_HINTS = {
     'Детектив': 'загадки, улики, расследование, скрытые мотивы',
 };
 
-// ===================== Время и место =====================
-// Календарь ведёт код: модель только сообщает, сколько прошло времени или какая теперь дата.
+  // ===================== Время и место =====================
+  // Календарь ведёт код: модель только сообщает, сколько прошло времени или какая теперь дата.
 
-const MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
-const WEEKDAYS = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
+  const MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+  const WEEKDAYS = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
 
-const COUNTRIES = {
-    UK: { name: 'Великобритания', keys: ['великобритан', 'британ', 'англи', 'шотланд', 'уэльс', 'лондон', 'uk', 'united kingdom', 'england', 'britain'] },
-    US: { name: 'США', keys: ['сша', 'америк', 'штат', 'нью-йорк', 'калифорни', 'usa', 'united states', 'america'] },
-    JP: { name: 'Япония', keys: ['япони', 'токио', 'осака', 'киото', 'japan'] },
-    RU: { name: 'Россия', keys: ['росси', 'москв', 'петербург', 'russia'] },
-};
+  const COUNTRIES = {
+      UK: { name: 'Великобритания', keys: ['великобритан', 'британ', 'англи', 'шотланд', 'уэльс', 'лондон', 'uk', 'united kingdom', 'england', 'britain'] },
+      US: { name: 'США', keys: ['сша', 'америк', 'штат', 'нью-йорк', 'калифорни', 'usa', 'united states', 'america'] },
+      JP: { name: 'Япония', keys: ['япони', 'токио', 'осака', 'киото', 'japan'] },
+      RU: { name: 'Россия', keys: ['росси', 'москв', 'петербург', 'russia'] },
+  };
 
-function detectCountry(text) {
-    const t = String(text || '').toLowerCase();
-    for (const [code, c] of Object.entries(COUNTRIES)) {
-        if (c.keys.some(k => (k.length <= 3 ? new RegExp(`(^|[^a-zа-яё])${k}([^a-zа-яё]|$)`).test(t) : t.includes(k)))) return code;
+  function detectCountry(text) {
+      const t = String(text || '').toLowerCase();
+      for (const [code, c] of Object.entries(COUNTRIES)) {
+          if (c.keys.some(k => (k.length <= 3 ? new RegExp(`(^|[^a-zа-яё])${k}([^a-zа-яё]|$)`).test(t) : t.includes(k)))) return code;
+      }
+      return '';
+  }
+
+  // Даты храним как 'YYYY-MM-DD', считаем в UTC, чтобы не мешали часовые пояса
+  function toDate(iso) {
+      const [y, m, d] = iso.split('-').map(Number);
+      return new Date(Date.UTC(y, m - 1, d));
+  }
+  function toIso(dt) {
+      return dt.toISOString().slice(0, 10);
+  }
+  function addDays(iso, n) {
+      const dt = toDate(iso);
+      dt.setUTCDate(dt.getUTCDate() + n);
+      return toIso(dt);
+  }
+  function addMonths(iso, n) {
+      const dt = toDate(iso);
+      const day = dt.getUTCDate();
+      dt.setUTCDate(1);
+      dt.setUTCMonth(dt.getUTCMonth() + n);
+      const last = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() + 1, 0)).getUTCDate();
+      dt.setUTCDate(Math.min(day, last));
+      return toIso(dt);
+  }
+  function daysBetween(a, b) {
+      return Math.round((toDate(b) - toDate(a)) / 86400000);
+  }
+  function ymd(y, m, d) {
+      return toIso(new Date(Date.UTC(y, m - 1, d)));
+  }
+  function formatDate(iso, withYear = true) {
+      const dt = toDate(iso);
+      return `${dt.getUTCDate()} ${MONTHS_GEN[dt.getUTCMonth()]}${withYear ? ' ' + dt.getUTCFullYear() : ''}`;
+  }
+  function weekday(iso) {
+      return WEEKDAYS[toDate(iso).getUTCDay()];
+  }
+  function plural(n, one, few, many) {
+      const a = Math.abs(n) % 100, b = a % 10;
+      if (a > 10 && a < 20) return many;
+      if (b > 1 && b < 5) return few;
+      if (b === 1) return one;
+      return many;
+  }
+  function daysWord(n) {
+      return `${n} ${plural(n, 'день', 'дня', 'дней')}`;
+  }
+
+  // Пасха: западная (григорианская) и православная (юлианская + 13 дней, верно для 1900–2099)
+  function westernEaster(y) {
+      const a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4;
+      const f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
+      const h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4;
+      const l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
+      const month = Math.floor((h + l - 7 * m + 114) / 31), day = ((h + l - 7 * m + 114) % 31) + 1;
+      return ymd(y, month, day);
+  }
+  function orthodoxEaster(y) {
+      const a = y % 4, b = y % 7, c = y % 19;
+      const d = (19 * c + 15) % 30, e = (2 * a + 4 * b - d + 34) % 7;
+      const month = Math.floor((d + e + 114) / 31), day = ((d + e + 114) % 31) + 1;
+      return addDays(ymd(y, month, day), 13);
+  }
+  // n-й день недели месяца (wd: 0 — вс, 1 — пн…); n = -1 — последний
+  function nthWeekday(y, m, wd, n) {
+      if (n > 0) {
+          const first = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
+          return ymd(y, m, 1 + ((wd - first + 7) % 7) + (n - 1) * 7);
+      }
+      const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+      const lastWd = new Date(Date.UTC(y, m - 1, lastDay)).getUTCDay();
+      return ymd(y, m, lastDay - ((lastWd - wd + 7) % 7));
+  }
+
+  // Праздники и события. Правила: d — фиксированная дата [месяц, день], to — конец периода,
+  // nth — [месяц, день недели, номер], easter / orth — смещение от западной / православной Пасхи, len — длительность в днях
+  const HOLIDAYS = {
+      ALL: [
+          { name: 'Новый год', d: [1, 1] },
+          { name: 'День святого Валентина', d: [2, 14] },
+          { name: 'Хэллоуин', d: [10, 31] },
+          { name: 'Сочельник', d: [12, 24] },
+          { name: 'Рождество', d: [12, 25] },
+          { name: 'Канун Нового года', d: [12, 31] },
+      ],
+      UK: [
+          { name: 'Новый год', d: [1, 1], note: 'выходной; после вечеринок в канун' },
+          { name: 'Ночь Бёрнса', d: [1, 25], note: 'шотландский праздник: хаггис, стихи Роберта Бёрнса' },
+          { name: 'День святого Валентина', d: [2, 14], note: 'открытки и ужины в ресторанах' },
+          { name: 'Блинный вторник (Pancake Day)', easter: -47, note: 'все едят блины с лимоном и сахаром, школьные забеги с блинами' },
+          { name: 'День матери (Mothering Sunday)', easter: -21, note: 'цветы и открытки мамам' },
+          { name: 'День святого Патрика', d: [3, 17], note: 'ирландский праздник, отмечают в пабах: зелёный цвет, Guinness' },
+          { name: 'День дурака', d: [4, 1], note: 'розыгрыши до полудня' },
+          { name: 'Страстная пятница', easter: -2, note: 'выходной, булочки с крестом (hot cross buns)' },
+          { name: 'Пасха', easter: 0, note: 'шоколадные яйца, охота за яйцами для детей' },
+          { name: 'Пасхальный понедельник', easter: 1, note: 'банковский выходной' },
+          { name: 'Майский банковский выходной', nth: [5, 1, 1], note: 'длинные выходные' },
+          { name: 'Весенний банковский выходной', nth: [5, 1, -1], note: 'длинные выходные, часто поездки за город' },
+          { name: 'День отца', nth: [6, 0, 3] },
+          { name: 'Уимблдон', d: [6, 29], len: 14, note: 'теннисный турнир: клубника со сливками, все смотрят матчи' },
+          { name: 'Летние школьные каникулы', d: [7, 22], to: [9, 3], note: 'семьи уезжают в отпуск, на море или в Европу' },
+          { name: 'Летний банковский выходной', nth: [8, 1, -1], note: 'последний длинный уикенд лета, Ноттинг-Хиллский карнавал в Лондоне' },
+          { name: 'Хэллоуин', d: [10, 31], note: 'костюмы, тыквы, дети ходят за сладостями' },
+          { name: 'Ночь Гая Фокса (Bonfire Night)', d: [11, 5], note: 'костры и фейерверки' },
+          { name: 'Воскресенье памяти', nth: [11, 0, 2], note: 'минута молчания, красные маки на одежде (их носят с конца октября)' },
+          { name: 'Сочельник', d: [12, 24] },
+          { name: 'Рождество', d: [12, 25], note: 'главный праздник года: индейка, крекеры с бумажными коронами, речь короля по ТВ' },
+          { name: 'День подарков (Boxing Day)', d: [12, 26], note: 'выходной, распродажи, футбол' },
+          { name: 'Канун Нового года (Хогманай)', d: [12, 31], note: 'вечеринки, фейерверки, «Auld Lang Syne» в полночь' },
+      ],
+      US: [
+          { name: 'Новый год', d: [1, 1] },
+          { name: 'День Мартина Лютера Кинга', nth: [1, 1, 3], note: 'федеральный выходной' },
+          { name: 'Супербоул', nth: [2, 0, 2], note: 'финал по американскому футболу: вечеринки, крылышки, реклама' },
+          { name: 'День святого Валентина', d: [2, 14], note: 'открытки, шоколад, школьники обмениваются валентинками' },
+          { name: 'День святого Патрика', d: [3, 17], note: 'всё зелёное, парады, особенно в Нью-Йорке, Бостоне и Чикаго' },
+          { name: 'Пасха', easter: 0, note: 'охота за яйцами, пасхальный кролик' },
+          { name: 'День матери', nth: [5, 0, 2], note: 'цветы, завтрак маме' },
+          { name: 'День памяти (Memorial Day)', nth: [5, 1, -1], note: 'неофициальное начало лета: барбекю, открытие бассейнов' },
+          { name: 'Выпускные', d: [5, 20], to: [6, 15], note: 'школьные и университетские выпускные, проммы' },
+          { name: 'День отца', nth: [6, 0, 3] },
+          { name: 'День независимости', d: [7, 4], note: 'фейерверки, барбекю, флаги' },
+          { name: 'День труда', nth: [9, 1, 1], note: 'конец лета, после него начинается учебный год' },
+          { name: 'Хэллоуин', d: [10, 31], note: 'костюмы, тыквы, trick-or-treat, украшенные дома' },
+          { name: 'День благодарения', nth: [11, 4, 4], note: 'главный семейный праздник: индейка, тыквенный пирог, парад Macy\'s' },
+          { name: 'Чёрная пятница', nth: [11, 4, 4], shift: 1, note: 'огромные распродажи' },
+          { name: 'Сочельник', d: [12, 24] },
+          { name: 'Рождество', d: [12, 25], note: 'ёлка, подарки, носки у камина, рождественские огни на домах' },
+          { name: 'Канун Нового года', d: [12, 31], note: 'вечеринки, падение шара на Таймс-сквер' },
+      ],
+      JP: [
+          { name: 'Сёгацу (Новый год)', d: [1, 1], to: [1, 3], note: 'главный праздник: первое посещение храма (хацумодэ), осэти, новогодние открытки, семья' },
+          { name: 'День совершеннолетия', nth: [1, 1, 2], note: '20-летние в праздничных кимоно' },
+          { name: 'Сэцубун', d: [2, 3], note: 'бросают бобы со словами «Демоны вон, удача в дом!»' },
+          { name: 'День святого Валентина', d: [2, 14], note: 'в Японии шоколад дарят девушки — любимым и коллегам' },
+          { name: 'Хинамацури (праздник девочек)', d: [3, 3], note: 'выставка кукол хина' },
+          { name: 'Белый день', d: [3, 14], note: 'парни отвечают подарками на валентинки' },
+          { name: 'Ханами', d: [3, 25], to: [4, 10], note: 'цветёт сакура: пикники под деревьями' },
+          { name: 'Начало учебного и рабочего года', d: [4, 1], note: 'новые классы, первокурсники, новые сотрудники' },
+          { name: 'Золотая неделя', d: [4, 29], to: [5, 5], note: 'череда выходных, все путешествуют' },
+          { name: 'День детей', d: [5, 5], note: 'вывешивают карпов-коинобори' },
+          { name: 'Сезон дождей (цую)', d: [6, 7], to: [7, 19], note: 'постоянные дожди, сырость, цветут гортензии' },
+          { name: 'Танабата', d: [7, 7], note: 'желания на бумажных полосках на бамбуке' },
+          { name: 'Летние фестивали', d: [7, 20], to: [8, 31], note: 'мацури, юкаты, фейерверки, уличная еда' },
+          { name: 'Обон', d: [8, 13], to: [8, 16], note: 'поминовение предков, поездки в родные места, танцы бон-одори' },
+          { name: 'День почитания старших', nth: [9, 1, 3] },
+          { name: 'Хэллоуин', d: [10, 31], note: 'костюмированные толпы в Сибуе' },
+          { name: 'Сити-го-сан', d: [11, 15], note: 'дети 3, 5 и 7 лет в нарядах идут в храм' },
+          { name: 'Сочельник', d: [12, 24], note: 'в Японии — романтический вечер для пар, курица из KFC и клубничный торт' },
+          { name: 'Омисока (канун Нового года)', d: [12, 31], note: 'уборка, лапша тосикоси-соба, 108 ударов храмового колокола' },
+      ],
+      RU: [
+          { name: 'Новогодние каникулы', d: [1, 1], to: [1, 8], note: 'длинные выходные: оливье, мандарины, гости' },
+          { name: 'Рождество', d: [1, 7], note: 'православное Рождество' },
+          { name: 'Старый Новый год', d: [1, 14] },
+          { name: 'Крещение', d: [1, 19], note: 'купание в проруби' },
+          { name: 'Татьянин день', d: [1, 25], note: 'день студентов' },
+          { name: 'День святого Валентина', d: [2, 14] },
+          { name: 'Масленица', orth: -55, len: 7, note: 'неделя блинов, в последний день сжигают чучело' },
+          { name: 'День защитника Отечества', d: [2, 23], note: 'поздравляют мужчин' },
+          { name: 'Международный женский день', d: [3, 8], note: 'цветы, особенно тюльпаны и мимоза, поздравляют женщин' },
+          { name: 'День смеха', d: [4, 1] },
+          { name: 'Пасха', orth: 0, note: 'куличи, крашеные яйца, «Христос воскресе!»' },
+          { name: 'Майские праздники', d: [5, 1], to: [5, 11], note: 'шашлыки, дачи, открытие сезона' },
+          { name: 'День Победы', d: [5, 9], note: 'парад, салют, георгиевские ленточки' },
+          { name: 'День России', d: [6, 12] },
+          { name: 'Ивана Купала', d: [7, 7], note: 'венки, костры, гадания' },
+          { name: 'День знаний', d: [9, 1], note: 'начало учебного года, линейки, букеты' },
+          { name: 'День учителя', d: [10, 5] },
+          { name: 'Хэллоуин', d: [10, 31], note: 'не официальный праздник, но молодёжь устраивает костюмированные вечеринки, в барах и клубах тематические ночи' },
+          { name: 'День народного единства', d: [11, 4] },
+          { name: 'Канун Нового года', d: [12, 31], note: 'ёлка, оливье, речь президента, бой курантов' },
+      ],
+  };
+
+  function occurrences(h, y) {
+      let start;
+      if (h.d) start = ymd(y, h.d[0], h.d[1]);
+      else if (h.nth) start = addDays(nthWeekday(y, h.nth[0], h.nth[1], h.nth[2]), h.shift || 0);
+      else if (h.easter !== undefined) start = addDays(westernEaster(y), h.easter);
+      else if (h.orth !== undefined) start = addDays(orthodoxEaster(y), h.orth);
+      else if (h.md) start = ymd(y, Number(h.md.slice(0, 2)), Number(h.md.slice(3, 5)));
+      else return null;
+      let end = start;
+      if (h.to) {
+          end = ymd(y, h.to[0], h.to[1]);
+          if (end < start) end = ymd(y + 1, h.to[0], h.to[1]);
+      } else if (h.len) end = addDays(start, h.len - 1);
+      return { start, end };
+  }
+
+  function holidaysFor(st) {
+      const code = st.time.country;
+      const base = HOLIDAYS[code] || HOLIDAYS.ALL;
+      const custom = (st.time.custom || []).map(c => ({ name: c.name, md: c.md, note: c.note, custom: true }));
+      return base.concat(custom);
+  }
+
+  // Праздники, которые идут сейчас или начнутся в ближайшие days дней
+  function upcoming(st, days) {
+      const today = st.time.date;
+      const y = toDate(today).getUTCFullYear();
+      const out = [];
+      for (const h of holidaysFor(st)) {
+          for (const yy of [y - 1, y, y + 1]) {
+              const o = occurrences(h, yy);
+              if (!o) continue;
+              if (o.end < today) continue;
+              const inDays = daysBetween(today, o.start);
+              if (inDays > days) continue;
+              out.push(Object.assign({}, h, { start: o.start, end: o.end, inDays: inDays, ongoing: o.start <= today }));
+              break;
+          }
+      }
+      return out.sort((a, b) => a.start.localeCompare(b.start));
+  }
+
+  // Сезон и его приметы (все поддерживаемые страны — в Северном полушарии)
+  const SEASON_HINTS = {
+      'зима': 'холодно, рано темнеет; тёплая одежда, горячие напитки, снег или слякоть',
+      'весна': 'теплеет, всё цветёт, дни становятся длиннее, погода переменчивая',
+      'лето': 'тепло или жарко, длинные светлые вечера; отпуска, пляжи, пикники, прогулки допоздна',
+      'осень': 'холодает, листопад, дожди, рано темнеет; начало учебного года, уютные вечера дома',
+  };
+  function season(iso) {
+      const m = toDate(iso).getUTCMonth() + 1, d = toDate(iso).getUTCDate();
+      const name = [12, 1, 2].includes(m) ? 'зима' : m <= 5 ? 'весна' : m <= 8 ? 'лето' : 'осень';
+      const idx = { 'зима': [12, 1, 2], 'весна': [3, 4, 5], 'лето': [6, 7, 8], 'осень': [9, 10, 11] }[name].indexOf(m);
+      const phase = idx === 0 ? (d <= 10 ? 'начало' : 'первая половина') : idx === 1 ? 'середина' : (d >= 20 ? 'конец' : 'вторая половина');
+      return { name, phase, hint: SEASON_HINTS[name] };
+  }
+
+  // Разбор даты из ответа модели или ввода: 2025-02-14, 14.02.2025, 14.02, «14 февраля 2025», «14 февраля»
+  function parseDateText(text, refIso) {
+      const t = String(text || '').trim().toLowerCase();
+      let y, m, d;
+      let mm = t.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+      if (mm) [y, m, d] = [Number(mm[1]), Number(mm[2]), Number(mm[3])];
+      if (!mm && (mm = t.match(/(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?/))) {
+          d = Number(mm[1]); m = Number(mm[2]);
+          if (mm[3]) y = Number(mm[3].length === 2 ? '20' + mm[3] : mm[3]);
+      }
+      if (!m) {
+          mm = t.match(/(\d{1,2})\s+([а-яё]+)(?:\s+(\d{4}))?/);
+          if (mm) {
+              const mi = MONTHS_GEN.findIndex(x => mm[2].startsWith(x.slice(0, 3)));
+              if (mi >= 0) { d = Number(mm[1]); m = mi + 1; if (mm[3]) y = Number(mm[3]); }
+          }
+      }
+      if (!m || !d || m > 12 || d > 31) return null;
+      if (!y) {
+          // год не указан — берём ближайшую такую дату не раньше текущей даты истории
+          const ref = refIso || toIso(new Date());
+          y = toDate(ref).getUTCFullYear();
+          if (ymd(y, m, d) < ref) y += 1;
+      }
+      const iso = ymd(y, m, d);
+      return toDate(iso).getUTCMonth() + 1 === m ? iso : null;
+  }
+
+  // «+3 дня», «2 недели», «месяц», «полгода»
+  function parseDuration(text) {
+      const t = String(text || '').toLowerCase().replace(',', '.');
+      const mm = t.match(/(\d+(?:\.\d+)?)?\s*(дн|ден|сут|недел|нед|месяц|мес|год|лет|полгода)/);
+      if (!mm) return null;
+      if (mm[2] === 'полгода') return { months: 6 };
+      const n = mm[1] ? Number(mm[1]) : 1;
+      if (/^(дн|ден|сут)/.test(mm[2])) return { days: Math.round(n) };
+      if (/^нед/.test(mm[2])) return { days: Math.round(n * 7) };
+      if (/^мес/.test(mm[2])) return { months: Math.round(n) };
+      return { months: Math.round(n * 12) };
+  }
+
+  function applyDuration(iso, dur) {
+      return dur.months ? addMonths(iso, dur.months) : addDays(iso, dur.days);
+  }
+
+  function placeLine(st) {
+      const t = st.time;
+      const country = COUNTRIES[t.country]?.name || t.countryName || '';
+      return [t.city, country].filter(Boolean).join(', ');
+  }
+
+  function holidayLine(h, today) {
+      const when = h.ongoing
+          ? (h.start === h.end ? 'сегодня' : `идёт сейчас (до ${formatDate(h.end, false)})`)
+          : h.inDays === 1 ? 'завтра' : `через ${daysWord(h.inDays)} (${formatDate(h.start, false)})`;
+      return `— ${h.name}: ${when}${h.note ? ` — ${h.note}` : ''}`;
+  }
+
+  // ---------- Хроника: когда что было ----------
+  function agoText(days) {
+      if (days <= 0) return 'сегодня';
+      if (days === 1) return 'вчера';
+      if (days < 7) return `${daysWord(days)} назад`;
+      if (days < 14) return 'неделю назад';
+      if (days < 28) return `${Math.round(days / 7)} ${plural(Math.round(days / 7), 'неделю', 'недели', 'недель')} назад`;
+      if (days < 60) return 'месяц назад';
+      if (days < 365) { const m = Math.round(days / 30); return `${m} ${plural(m, 'месяц', 'месяца', 'месяцев')} назад`; }
+      const y = Math.round(days / 365);
+      return `${y} ${plural(y, 'год', 'года', 'лет')} назад`;
+  }
+  function timeline(st) {
+      if (!Array.isArray(st.time.timeline)) st.time.timeline = [];
+      return st.time.timeline;
+  }
+  function addEvent(st, date, text) {
+      const list = timeline(st);
+      text = String(text || '').trim();
+      if (!text || !date) return false;
+      if (list.some(e => e.text.toLowerCase() === text.toLowerCase())) return false;
+      list.push({ date, text });
+      list.sort((a, b) => a.date.localeCompare(b.date));
+      if (list.length > 60) list.splice(0, list.length - 60);
+      return true;
+  }
+  function chronicleLines(st, count) {
+      const today = st.time.date;
+      return timeline(st).slice(-count).map(e => `— ${formatDate(e.date, false)}${today ? ` (${agoText(daysBetween(e.date, today))})` : ''}: ${e.text}`);
+  }
+
+  // Шапка для обычных ответов
+  function buildTimeInjection(st) {
+      const t = st.time;
+      if (!st.direction.time || (!t.date && !placeLine(st))) return '';
+      const lines = ['[Время и место истории — держись их, даже если давно не упоминались.'];
+      if (t.date) {
+          const s = season(t.date);
+          lines.push(`Сейчас: ${weekday(t.date)}, ${formatDate(t.date)}. ${s.name[0].toUpperCase() + s.name.slice(1)} (${s.phase}): ${s.hint}.`);
+      }
+      const place = placeLine(st);
+      if (place) lines.push(`Место: ${place}. Еда, деньги, бытовые мелочи, обращения, праздники — местные; не переноси реалии других стран.`);
+      if (t.flavor) lines.push(`Местный колорит: ${t.flavor}`);
+      if (t.date) {
+          const up = upcoming(st, 21);
+          if (up.length) {
+              lines.push('Праздники и события рядом (персонажи о них знают; разыгрывать не обязательно, но игнорировать странно):');
+              up.slice(0, 4).forEach(h => lines.push(holidayLine(h, t.date)));
+          }
+          const chron = chronicleLines(st, 12);
+          if (chron.length) {
+              lines.push('Хроника — когда что произошло (держись этих сроков; не путай «на прошлой неделе» и «месяц назад»):');
+              chron.forEach(l => lines.push(l));
+          }
+      }
+      return lines.join('\n') + ']';
+  }
+
+  // Раздел для размышления
+  function buildTimeSection(st) {
+      if (!st?.direction?.time) return '';
+      const t = st.time;
+      const lines = ['Время и место. Календарь ведёт код — ты только сообщаешь изменения.'];
+      if (t.date) {
+          lines.push(`Последняя известная дата истории: ${weekday(t.date)}, ${formatDate(t.date)}.`);
+      } else {
+          lines.push('Дата истории ещё не задана. Определи её по чату (упоминания месяца, погоды, праздников, сезона). Если точных подсказок нет — выбери правдоподобную дату, которая подходит к происходящему, и задай её командой DATE.');
+      }
+      const place = placeLine(st);
+      lines.push(place ? `Место: ${place}.` : 'Место ещё не задано. Определи страну и город по чату и задай командой PLACE.');
+      if (t.date) {
+          const up = upcoming(st, 45);
+          if (up.length) {
+              lines.push('Ближайшие праздники и события:');
+              up.slice(0, 6).forEach(h => lines.push(holidayLine(h, t.date)));
+          }
+      }
+      lines.push('');
+      lines.push('Команды для времени и места:');
+      lines.push('TIME +N дней / недель / месяцев — сколько сюжетного времени прошло в чате с последней известной даты (оцени по событиям: ночёвки, «на следующий день», таймскипы). Если прошло меньше суток — не пиши ничего.');
+      lines.push('DATE ДД.ММ.ГГГГ — если в чате прямо названа дата или нужно задать её впервые.');
+      lines.push('PLACE Страна: Город — если место задано впервые или персонажи переехали.');
+      lines.push('EVENT: важное событие из чата с прошлой проверки — знакомство, ссора, признание, первый поцелуй, переезд, поездка, праздник. Одна строка, кратко. Дату плагин поставит сам; если событие было не сегодня — EVENT ДД.ММ: текст. Не повторяй то, что уже есть в хронике.');
+      const recent = chronicleLines(st, 6);
+      if (recent.length) { lines.push('Последнее в хронике:'); recent.forEach(l => lines.push(l)); }
+      return lines.join('\n');
+  }
+
+  // Обработка команд TIME / DATE / PLACE / LOCAL. Возвращает true, если строка распознана.
+  function applyTimeCommand(st, line, res) {
+      const t = st.time;
+      let m;
+      if ((m = line.match(/^TIME\s*[:：]?\s*\+?\s*(.+)$/i))) {
+          if (!st.direction.time || !t.date) return true;
+          const dur = parseDuration(m[1]);
+          if (dur && (dur.days > 0 || dur.months > 0)) {
+              const before = t.date;
+              t.date = applyDuration(t.date, dur);
+              res.timeMoved = daysBetween(before, t.date);
+          }
+          return true;
+      }
+      if ((m = line.match(/^DATE\s*[:：]?\s*(.+)$/i))) {
+          if (!st.direction.time) return true;
+          const iso = parseDateText(m[1], t.date);
+          if (iso) {
+              if (t.date && iso !== t.date) res.timeMoved = daysBetween(t.date, iso);
+              else if (!t.date) res.dateSet = iso;
+              t.date = iso;
+          }
+          return true;
+      }
+      if ((m = line.match(/^PLACE\s*[:：]?\s*(.+)$/i))) {
+          if (!st.direction.time) return true;
+          let countryText = m[1], city = '';
+          const sep = m[1].match(/^\[?([^\]:：]+?)\]?\s*[:：—–]\s*(.+)$/);
+          if (sep) { countryText = sep[1]; city = sep[2]; }
+          else if (m[1].includes(',')) { const parts = m[1].split(','); countryText = parts.pop(); city = parts.join(','); }
+          const code = detectCountry(countryText) || detectCountry(m[1]);
+          const newCountryName = code ? '' : countryText.trim();
+          if (code !== t.country || newCountryName !== t.countryName) {
+              if (!t.flavorLocked) t.flavor = '';
+              res.placeSet = true;
+          }
+          if (city.trim() !== t.city) res.placeSet = true;
+          t.country = code;
+          t.countryName = newCountryName;
+          t.city = city.trim();
+          return true;
+      }
+      if ((m = line.match(/^EVENT\s*\[?(\d{1,2}[.\-/]\d{1,2}(?:[.\-/]\d{2,4})?)?\]?\s*[:：—–-]\s*(.+)$/i))) {
+          if (!st.direction.time || !t.date) return true;
+          let date = t.date;
+          if (m[1]) {
+              const d = parseDateText(m[1].replace(/[-/]/g, '.'), '1900-01-01');
+              if (d) {
+                  // год не указан — берём ближайшую такую дату не позже текущей
+                  date = /\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}/.test(m[1]) ? d : `${t.date.slice(0, 4)}${d.slice(4)}`;
+                  if (date > t.date) date = `${Number(t.date.slice(0, 4)) - 1}${d.slice(4)}`;
+              }
+          }
+          if (addEvent(st, date, m[2])) (res.events = res.events || []).push(m[2].trim());
+          return true;
+      }
+      if ((m = line.match(/^LOCAL\s*[:：—–-]\s*(.+)$/i))) {
+          if (st.direction.time && !t.flavorLocked) t.flavor = m[1].trim();
+          return true;
+      }
+      return false;
+  }
+
+
+
+  // Колорит — отдельным коротким запросом, чтобы модель его не пропускала
+  function flavorPrompt(st) {
+      return 'Напиши 2–3 предложения о местном колорите для ролевой игры, действие которой происходит здесь: ' + placeLine(st) + '. ' +
+          'Перечисли конкретно: типичная еда и напитки, валюта и привычки с деньгами (например, чаевые), транспорт, климат, бытовые мелочи и манера общения местных. ' +
+          'Это справка для автора, чтобы не путать реалии разных стран. Пиши по-русски, без вступления и без списков — сразу текст.';
+  }
+  function cleanFlavor(raw) {
+      return String(raw || '').replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u2800\u3000\u3164\uFEFF]/g, ' ')
+          .replace(/<(think|thinking|reasoning)>[\s\S]*?<\/\1>/gi, '').replace(/\*\*/g, '').trim()
+          .replace(/^["«]|["»]$/g, '').trim();
+  }
+
+  // ===================== Праздничные события =====================
+  // Традиции (классические задачи), скрытая задача, метки в ответах, итог и медали.
+
+  var TRADITIONS = [
+    { match: ['хэллоуин'], emoji: '🎃', vibe: 'тыквы на крыльцах, гирлянды из летучих мышей, костюмы в витринах, запах корицы и сладостей', tasks: ['Вырезать фонарь из тыквы', 'Выбрать или смастерить костюм', 'Раздать сладости детям или сходить за сладостями самим', 'Посмотреть ужастик вместе', 'Сходить на хэллоуинскую вечеринку', 'Украсить дом к празднику'] },
+    { match: ['валентин'], emoji: '💘', vibe: 'сердечки в витринах, очереди в цветочных, парочки в кафе', tasks: ['Подарить валентинку', 'Устроить романтический ужин', 'Сделать подарок своими руками', 'Сходить на свидание', 'Признаться кому-то в чувствах'] },
+    { match: ['белый день'], emoji: '🍬', vibe: 'в магазинах белый шоколад и зефир в подарочных коробках', tasks: ['Ответить на валентинку подарком', 'Выбрать белый шоколад или сладости', 'Вручить подарок лично'] },
+    { country: 'JP', match: ['сочельник'], emoji: '🎄', vibe: 'иллюминация, парочки на улицах, очереди за курицей и клубничными тортами', tasks: ['Сходить на свидание', 'Съесть рождественский клубничный торт', 'Заказать курицу из KFC', 'Погулять под иллюминацией'] },
+    { match: ['рождество', 'сочельник'], emoji: '🎁', vibe: 'ёлки в окнах, рождественские ярмарки, огоньки, глинтвейн и музыка', tasks: ['Нарядить ёлку', 'Обменяться подарками', 'Испечь рождественское печенье', 'Спеть или послушать рождественские песни', 'Повесить носки для подарков'] },
+    { match: ['сёгацу'], emoji: '⛩', vibe: 'очереди у храмов, новогодние украшения из сосны и бамбука, тишина закрытых магазинов', tasks: ['Сходить в храм на хацумодэ', 'Попробовать осэти', 'Вытянуть предсказание омикудзи', 'Отправить новогодние открытки'] },
+    { match: ['омисока'], emoji: '🔔', vibe: 'генеральная уборка, запах лапши, ожидание колокола', tasks: ['Сделать генеральную уборку', 'Съесть тосикоси-собу', 'Послушать удары колокола в полночь'] },
+    { match: ['новый год', 'новогод', 'канун нового', 'хогманай'], emoji: '🎆', vibe: 'гирлянды, ёлки, предпраздничная суета, запах мандаринов', tasks: ['Нарядить ёлку', 'Приготовить праздничный стол', 'Загадать желание в полночь', 'Посмотреть салют', 'Подарить подарки'] },
+    { match: ['масленица'], emoji: '🥞', vibe: 'запах блинов отовсюду, ярмарки, гулянья', tasks: ['Напечь блинов', 'Сходить на гулянья', 'Сжечь чучело Масленицы', 'Попросить прощения в Прощёное воскресенье'] },
+    { match: ['блинный'], emoji: '🥞', vibe: 'везде блины, школьники тренируются к блинным забегам', tasks: ['Напечь блинов', 'Попробовать блины с лимоном и сахаром', 'Поучаствовать в блинном забеге'] },
+    { match: ['пасха'], emoji: '🐣', vibe: 'крашеные яйца, весенние цветы, праздничная выпечка в витринах', tasks: ['Покрасить яйца', 'Устроить охоту за яйцами', 'Испечь праздничную выпечку', 'Собраться на семейный обед'] },
+    { match: ['благодарения'], emoji: '🦃', vibe: 'запах индейки и тыквенного пирога, все едут к родным', tasks: ['Приготовить индейку', 'Испечь тыквенный пирог', 'Собраться за общим столом', 'Сказать, за что благодарен', 'Посмотреть парад или футбол'] },
+    { match: ['гая фокса'], emoji: '🎆', vibe: 'запах дыма, костры в парках, хлопки фейерверков', tasks: ['Сходить на костёр', 'Посмотреть фейерверк', 'Пожарить зефир на огне'] },
+    { match: ['независимости'], emoji: '🎇', vibe: 'флаги, барбекю во дворах, ожидание фейерверков', tasks: ['Устроить барбекю', 'Посмотреть фейерверк', 'Надеть что-то в цветах флага'] },
+    { match: ['женский'], emoji: '💐', vibe: 'тюльпаны и мимоза на каждом углу, очереди в цветочных', tasks: ['Подарить цветы', 'Поздравить близких и коллег', 'Устроить приятный сюрприз'] },
+    { match: ['защитника'], emoji: '🎖', vibe: 'открытки, поздравления в офисах, носки и пена для бритья в подарочных наборах', tasks: ['Поздравить мужчин', 'Подарить что-то практичное', 'Устроить праздничный ужин'] },
+    { match: ['танабата'], emoji: '🎋', vibe: 'бамбук с разноцветными бумажными полосками, юкаты', tasks: ['Написать желание на бумажной полоске', 'Повесить его на бамбук', 'Надеть юкату'] },
+    { match: ['ханами'], emoji: '🌸', vibe: 'розовые облака сакуры, пикники в парках, лепестки на асфальте', tasks: ['Устроить пикник под сакурой', 'Занять место под деревом с утра', 'Сделать фото среди цветов'] },
+    { match: ['обон'], emoji: '🏮', vibe: 'фонарики, танцы бон-одори, поезда переполнены едущими домой', tasks: ['Съездить в родные места', 'Станцевать бон-одори', 'Зажечь фонарики'] },
+    { match: ['летние фестивали'], emoji: '🎐', vibe: 'юкаты, лотки с уличной едой, фейерверки над рекой', tasks: ['Надеть юкату', 'Попробовать уличную еду', 'Посмотреть фейерверк', 'Поймать золотую рыбку на ярмарке'] },
+    { match: ['супербоул'], emoji: '🏈', vibe: 'все обсуждают матч и рекламу, в магазинах горы крылышек и чипсов', tasks: ['Устроить вечеринку у телевизора', 'Наготовить крылышек', 'Поспорить на исход матча'] },
+    { match: ['патрика'], emoji: '☘', vibe: 'всё зелёное, парады, переполненные пабы', tasks: ['Надеть что-то зелёное', 'Сходить в паб', 'Посмотреть парад'] },
+    { match: ['рожден'], emoji: '🎂', vibe: 'именинника поздравляют с утра', tasks: ['Выбрать подарок', 'Устроить сюрприз', 'Испечь или заказать торт', 'Собрать друзей', 'Сказать тёплые слова'] },
+  ];
+
+  function traditionsFor(h, country) {
+    var name = String(h.name || '').toLowerCase();
+    for (var i = 0; i < TRADITIONS.length; i++) {
+      var t = TRADITIONS[i];
+      if (t.country && t.country !== country) continue;
+      if (t.match.some(function (m) { return name.indexOf(m) >= 0; })) return t;
     }
-    return '';
-}
+    if (h.custom) return { emoji: '🗓', vibe: '', tasks: ['Отметить эту дату вместе', 'Сделать что-то памятное'] };
+    return null;
+  }
 
-// Даты храним как 'YYYY-MM-DD', считаем в UTC, чтобы не мешали часовые пояса
-function toDate(iso) {
-    const [y, m, d] = iso.split('-').map(Number);
-    return new Date(Date.UTC(y, m - 1, d));
-}
-function toIso(dt) {
-    return dt.toISOString().slice(0, 10);
-}
-function addDays(iso, n) {
-    const dt = toDate(iso);
-    dt.setUTCDate(dt.getUTCDate() + n);
-    return toIso(dt);
-}
-function addMonths(iso, n) {
-    const dt = toDate(iso);
-    const day = dt.getUTCDate();
-    dt.setUTCDate(1);
-    dt.setUTCMonth(dt.getUTCMonth() + n);
-    const last = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() + 1, 0)).getUTCDate();
-    dt.setUTCDate(Math.min(day, last));
-    return toIso(dt);
-}
-function daysBetween(a, b) {
-    return Math.round((toDate(b) - toDate(a)) / 86400000);
-}
-function ymd(y, m, d) {
-    return toIso(new Date(Date.UTC(y, m - 1, d)));
-}
-function formatDate(iso, withYear = true) {
-    const dt = toDate(iso);
-    return `${dt.getUTCDate()} ${MONTHS_GEN[dt.getUTCMonth()]}${withYear ? ' ' + dt.getUTCFullYear() : ''}`;
-}
-function weekday(iso) {
-    return WEEKDAYS[toDate(iso).getUTCDay()];
-}
-function plural(n, one, few, many) {
-    const a = Math.abs(n) % 100, b = a % 10;
-    if (a > 10 && a < 20) return many;
-    if (b > 1 && b < 5) return few;
-    if (b === 1) return one;
-    return many;
-}
-function daysWord(n) {
-    return `${n} ${plural(n, 'день', 'дня', 'дней')}`;
-}
+  function shuffle(arr) {
+    var a = arr.slice();
+    for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var x = a[i]; a[i] = a[j]; a[j] = x; }
+    return a;
+  }
 
-// Пасха: западная (григорианская) и православная (юлианская + 13 дней, верно для 1900–2099)
-function westernEaster(y) {
-    const a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4;
-    const f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
-    const h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4;
-    const l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
-    const month = Math.floor((h + l - 7 * m + 114) / 31), day = ((h + l - 7 * m + 114) % 31) + 1;
-    return ymd(y, month, day);
-}
-function orthodoxEaster(y) {
-    const a = y % 4, b = y % 7, c = y % 19;
-    const d = (19 * c + 15) % 30, e = (2 * a + 4 * b - d + 34) % 7;
-    const month = Math.floor((d + e + 114) / 31), day = ((d + e + 114) % 31) + 1;
-    return addDays(ymd(y, month, day), 13);
-}
-// n-й день недели месяца (wd: 0 — вс, 1 — пн…); n = -1 — последний
-function nthWeekday(y, m, wd, n) {
-    if (n > 0) {
-        const first = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
-        return ymd(y, m, 1 + ((wd - first + 7) % 7) + (n - 1) * 7);
+  function ensureHolidayState(st) {
+    if (st.holiday === undefined) st.holiday = null;
+    if (!st.holidayDone || typeof st.holidayDone !== 'object') st.holidayDone = {};
+    if (!Array.isArray(st.medals)) st.medals = [];
+    if (!Array.isArray(st.memories)) st.memories = [];
+    if (!Array.isArray(st.traces)) st.traces = [];
+    if (!st.notified || typeof st.notified !== 'object') st.notified = {};
+  }
+
+  // Праздник, который пора активировать (за leadDays дней до начала и до его конца)
+  function holidayToActivate(st, leadDays) {
+    var t = st.time;
+    if (!t.date || (st.holiday && !st.holiday.finished)) return null;
+    var list = upcoming(st, leadDays);
+    for (var i = 0; i < list.length; i++) {
+      var h = list[i];
+      var key = h.name + '|' + h.start;
+      if (st.holidayDone[key]) continue;
+      var tr = traditionsFor(h, t.country);
+      if (!tr) continue;
+      return { h: h, key: key, tr: tr };
     }
-    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
-    const lastWd = new Date(Date.UTC(y, m - 1, lastDay)).getUTCDay();
-    return ymd(y, m, lastDay - ((lastWd - wd + 7) % 7));
-}
+    return null;
+  }
 
-// Праздники и события. Правила: d — фиксированная дата [месяц, день], to — конец периода,
-// nth — [месяц, день недели, номер], easter / orth — смещение от западной / православной Пасхи, len — длительность в днях
-const HOLIDAYS = {
-    ALL: [
-        { name: 'Новый год', d: [1, 1] },
-        { name: 'День святого Валентина', d: [2, 14] },
-        { name: 'Хэллоуин', d: [10, 31] },
-        { name: 'Сочельник', d: [12, 24] },
-        { name: 'Рождество', d: [12, 25] },
-        { name: 'Канун Нового года', d: [12, 31] },
-    ],
-    UK: [
-        { name: 'Новый год', d: [1, 1], note: 'выходной; после вечеринок в канун' },
-        { name: 'Ночь Бёрнса', d: [1, 25], note: 'шотландский праздник: хаггис, стихи Роберта Бёрнса' },
-        { name: 'День святого Валентина', d: [2, 14], note: 'открытки и ужины в ресторанах' },
-        { name: 'Блинный вторник (Pancake Day)', easter: -47, note: 'все едят блины с лимоном и сахаром, школьные забеги с блинами' },
-        { name: 'День матери (Mothering Sunday)', easter: -21, note: 'цветы и открытки мамам' },
-        { name: 'День святого Патрика', d: [3, 17], note: 'ирландский праздник, отмечают в пабах: зелёный цвет, Guinness' },
-        { name: 'День дурака', d: [4, 1], note: 'розыгрыши до полудня' },
-        { name: 'Страстная пятница', easter: -2, note: 'выходной, булочки с крестом (hot cross buns)' },
-        { name: 'Пасха', easter: 0, note: 'шоколадные яйца, охота за яйцами для детей' },
-        { name: 'Пасхальный понедельник', easter: 1, note: 'банковский выходной' },
-        { name: 'Майский банковский выходной', nth: [5, 1, 1], note: 'длинные выходные' },
-        { name: 'Весенний банковский выходной', nth: [5, 1, -1], note: 'длинные выходные, часто поездки за город' },
-        { name: 'День отца', nth: [6, 0, 3] },
-        { name: 'Уимблдон', d: [6, 29], len: 14, note: 'теннисный турнир: клубника со сливками, все смотрят матчи' },
-        { name: 'Летние школьные каникулы', d: [7, 22], to: [9, 3], note: 'семьи уезжают в отпуск, на море или в Европу' },
-        { name: 'Летний банковский выходной', nth: [8, 1, -1], note: 'последний длинный уикенд лета, Ноттинг-Хиллский карнавал в Лондоне' },
-        { name: 'Хэллоуин', d: [10, 31], note: 'костюмы, тыквы, дети ходят за сладостями' },
-        { name: 'Ночь Гая Фокса (Bonfire Night)', d: [11, 5], note: 'костры и фейерверки' },
-        { name: 'Воскресенье памяти', nth: [11, 0, 2], note: 'минута молчания, красные маки на одежде (их носят с конца октября)' },
-        { name: 'Сочельник', d: [12, 24] },
-        { name: 'Рождество', d: [12, 25], note: 'главный праздник года: индейка, крекеры с бумажными коронами, речь короля по ТВ' },
-        { name: 'День подарков (Boxing Day)', d: [12, 26], note: 'выходной, распродажи, футбол' },
-        { name: 'Канун Нового года (Хогманай)', d: [12, 31], note: 'вечеринки, фейерверки, «Auld Lang Syne» в полночь' },
-    ],
-    US: [
-        { name: 'Новый год', d: [1, 1] },
-        { name: 'День Мартина Лютера Кинга', nth: [1, 1, 3], note: 'федеральный выходной' },
-        { name: 'Супербоул', nth: [2, 0, 2], note: 'финал по американскому футболу: вечеринки, крылышки, реклама' },
-        { name: 'День святого Валентина', d: [2, 14], note: 'открытки, шоколад, школьники обмениваются валентинками' },
-        { name: 'День святого Патрика', d: [3, 17], note: 'всё зелёное, парады, особенно в Нью-Йорке, Бостоне и Чикаго' },
-        { name: 'Пасха', easter: 0, note: 'охота за яйцами, пасхальный кролик' },
-        { name: 'День матери', nth: [5, 0, 2], note: 'цветы, завтрак маме' },
-        { name: 'День памяти (Memorial Day)', nth: [5, 1, -1], note: 'неофициальное начало лета: барбекю, открытие бассейнов' },
-        { name: 'Выпускные', d: [5, 20], to: [6, 15], note: 'школьные и университетские выпускные, проммы' },
-        { name: 'День отца', nth: [6, 0, 3] },
-        { name: 'День независимости', d: [7, 4], note: 'фейерверки, барбекю, флаги' },
-        { name: 'День труда', nth: [9, 1, 1], note: 'конец лета, после него начинается учебный год' },
-        { name: 'Хэллоуин', d: [10, 31], note: 'костюмы, тыквы, trick-or-treat, украшенные дома' },
-        { name: 'День благодарения', nth: [11, 4, 4], note: 'главный семейный праздник: индейка, тыквенный пирог, парад Macy\'s' },
-        { name: 'Чёрная пятница', nth: [11, 4, 4], shift: 1, note: 'огромные распродажи' },
-        { name: 'Сочельник', d: [12, 24] },
-        { name: 'Рождество', d: [12, 25], note: 'ёлка, подарки, носки у камина, рождественские огни на домах' },
-        { name: 'Канун Нового года', d: [12, 31], note: 'вечеринки, падение шара на Таймс-сквер' },
-    ],
-    JP: [
-        { name: 'Сёгацу (Новый год)', d: [1, 1], to: [1, 3], note: 'главный праздник: первое посещение храма (хацумодэ), осэти, новогодние открытки, семья' },
-        { name: 'День совершеннолетия', nth: [1, 1, 2], note: '20-летние в праздничных кимоно' },
-        { name: 'Сэцубун', d: [2, 3], note: 'бросают бобы со словами «Демоны вон, удача в дом!»' },
-        { name: 'День святого Валентина', d: [2, 14], note: 'в Японии шоколад дарят девушки — любимым и коллегам' },
-        { name: 'Хинамацури (праздник девочек)', d: [3, 3], note: 'выставка кукол хина' },
-        { name: 'Белый день', d: [3, 14], note: 'парни отвечают подарками на валентинки' },
-        { name: 'Ханами', d: [3, 25], to: [4, 10], note: 'цветёт сакура: пикники под деревьями' },
-        { name: 'Начало учебного и рабочего года', d: [4, 1], note: 'новые классы, первокурсники, новые сотрудники' },
-        { name: 'Золотая неделя', d: [4, 29], to: [5, 5], note: 'череда выходных, все путешествуют' },
-        { name: 'День детей', d: [5, 5], note: 'вывешивают карпов-коинобори' },
-        { name: 'Сезон дождей (цую)', d: [6, 7], to: [7, 19], note: 'постоянные дожди, сырость, цветут гортензии' },
-        { name: 'Танабата', d: [7, 7], note: 'желания на бумажных полосках на бамбуке' },
-        { name: 'Летние фестивали', d: [7, 20], to: [8, 31], note: 'мацури, юкаты, фейерверки, уличная еда' },
-        { name: 'Обон', d: [8, 13], to: [8, 16], note: 'поминовение предков, поездки в родные места, танцы бон-одори' },
-        { name: 'День почитания старших', nth: [9, 1, 3] },
-        { name: 'Хэллоуин', d: [10, 31], note: 'костюмированные толпы в Сибуе' },
-        { name: 'Сити-го-сан', d: [11, 15], note: 'дети 3, 5 и 7 лет в нарядах идут в храм' },
-        { name: 'Сочельник', d: [12, 24], note: 'в Японии — романтический вечер для пар, курица из KFC и клубничный торт' },
-        { name: 'Омисока (канун Нового года)', d: [12, 31], note: 'уборка, лапша тосикоси-соба, 108 ударов храмового колокола' },
-    ],
-    RU: [
-        { name: 'Новогодние каникулы', d: [1, 1], to: [1, 8], note: 'длинные выходные: оливье, мандарины, гости' },
-        { name: 'Рождество', d: [1, 7], note: 'православное Рождество' },
-        { name: 'Старый Новый год', d: [1, 14] },
-        { name: 'Крещение', d: [1, 19], note: 'купание в проруби' },
-        { name: 'Татьянин день', d: [1, 25], note: 'день студентов' },
-        { name: 'День святого Валентина', d: [2, 14] },
-        { name: 'Масленица', orth: -55, len: 7, note: 'неделя блинов, в последний день сжигают чучело' },
-        { name: 'День защитника Отечества', d: [2, 23], note: 'поздравляют мужчин' },
-        { name: 'Международный женский день', d: [3, 8], note: 'цветы, особенно тюльпаны и мимоза, поздравляют женщин' },
-        { name: 'День смеха', d: [4, 1] },
-        { name: 'Пасха', orth: 0, note: 'куличи, крашеные яйца, «Христос воскресе!»' },
-        { name: 'Майские праздники', d: [5, 1], to: [5, 11], note: 'шашлыки, дачи, открытие сезона' },
-        { name: 'День Победы', d: [5, 9], note: 'парад, салют, георгиевские ленточки' },
-        { name: 'День России', d: [6, 12] },
-        { name: 'Ивана Купала', d: [7, 7], note: 'венки, костры, гадания' },
-        { name: 'День знаний', d: [9, 1], note: 'начало учебного года, линейки, букеты' },
-        { name: 'День учителя', d: [10, 5] },
-        { name: 'Хэллоуин', d: [10, 31], note: 'не официальный праздник, но молодёжь устраивает костюмированные вечеринки, в барах и клубах тематические ночи' },
-        { name: 'День народного единства', d: [11, 4] },
-        { name: 'Канун Нового года', d: [12, 31], note: 'ёлка, оливье, речь президента, бой курантов' },
-    ],
-};
+  function newHoliday(found) {
+    var classic = shuffle(found.tr.tasks).slice(0, 2).map(function (text) { return { text: text, done: false, hidden: false, kind: 'classic' }; });
+    return {
+      key: found.key, name: found.h.name, emoji: found.tr.emoji, vibe: found.tr.vibe, note: found.h.note || '',
+      start: found.h.start, end: found.h.end, tasks: classic, finished: false
+    };
+  }
 
-function occurrences(h, y) {
-    let start;
-    if (h.d) start = ymd(y, h.d[0], h.d[1]);
-    else if (h.nth) start = addDays(nthWeekday(y, h.nth[0], h.nth[1], h.nth[2]), h.shift || 0);
-    else if (h.easter !== undefined) start = addDays(westernEaster(y), h.easter);
-    else if (h.orth !== undefined) start = addDays(orthodoxEaster(y), h.orth);
-    else if (h.md) start = ymd(y, Number(h.md.slice(0, 2)), Number(h.md.slice(3, 5)));
-    else return null;
-    let end = start;
-    if (h.to) {
-        end = ymd(y, h.to[0], h.to[1]);
-        if (end < start) end = ymd(y + 1, h.to[0], h.to[1]);
-    } else if (h.len) end = addDays(start, h.len - 1);
-    return { start, end };
-}
+  function activationPrompt(hol, st, names) {
+    return [
+      '[OOC: Пауза в ролевой игре. Ты — помощник автора. Скоро праздник: ' + hol.name + ' (' + formatDate(hol.start, false) + ')' + (placeLine(st) ? ', место: ' + placeLine(st) : '') + '.',
+      'Классические традиции уже выбраны: ' + hol.tasks.map(function (x) { return '«' + x.text + '»'; }).join(', ') + '.',
+      'Придумай по контексту этой ролевой ещё две праздничные задачи для ' + names.user + ' — связанные с праздником И с персонажами, отношениями, происходящим в истории. Лёгкие, выполнимые за пару сцен, в духе истории.',
+      'STORY: открытая сюжетная задача (игрок её видит)',
+      'SECRET: скрытая задача-сюрприз (игрок её не видит, а ты будешь ненавязчиво создавать для неё поводы)',
+      'Ответь ровно двумя строками в этом формате, без пояснений.]'
+    ].join('\n');
+  }
 
-function holidaysFor(st) {
-    const code = st.time.country;
-    const base = HOLIDAYS[code] || HOLIDAYS.ALL;
-    const custom = (st.time.custom || []).map(c => ({ name: c.name, md: c.md, note: c.note, custom: true }));
-    return base.concat(custom);
-}
+  function applyActivation(hol, raw) {
+    var text = String(raw || '').replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u2800\u3000\u3164\uFEFF]/g, ' ').replace(/\*\*/g, '');
+    var story = text.match(/STORY\s*[:：—–-]\s*(.+)/i);
+    var secret = text.match(/SECRET\s*[:：—–-]\s*(.+)/i);
+    if (story) hol.tasks.push({ text: story[1].trim(), done: false, hidden: false, kind: 'story' });
+    if (secret) hol.tasks.push({ text: secret[1].trim(), done: false, hidden: true, kind: 'secret' });
+  }
 
-// Праздники, которые идут сейчас или начнутся в ближайшие days дней
-function upcoming(st, days) {
-    const today = st.time.date;
-    const y = toDate(today).getUTCFullYear();
-    const out = [];
-    for (const h of holidaysFor(st)) {
-        for (const yy of [y - 1, y, y + 1]) {
-            const o = occurrences(h, yy);
-            if (!o) continue;
-            if (o.end < today) continue;
-            const inDays = daysBetween(today, o.start);
-            if (inDays > days) continue;
-            out.push({ ...h, start: o.start, end: o.end, inDays, ongoing: o.start <= today });
-            break;
-        }
+  function whenText(hol, today) {
+    if (today < hol.start) {
+      var d = daysBetween(today, hol.start);
+      return d === 1 ? 'завтра' : 'через ' + daysWord(d);
     }
-    return out.sort((a, b) => a.start.localeCompare(b.start));
-}
+    if (today > hol.end) return 'уже прошёл';
+    return hol.start === hol.end ? 'сегодня' : 'идёт сейчас';
+  }
 
-// Сезон и его приметы (все поддерживаемые страны — в Северном полушарии)
-const SEASON_HINTS = {
-    'зима': 'холодно, рано темнеет; тёплая одежда, горячие напитки, снег или слякоть',
-    'весна': 'теплеет, всё цветёт, дни становятся длиннее, погода переменчивая',
-    'лето': 'тепло или жарко, длинные светлые вечера; отпуска, пляжи, пикники, прогулки допоздна',
-    'осень': 'холодает, листопад, дожди, рано темнеет; начало учебного года, уютные вечера дома',
-};
-function season(iso) {
-    const m = toDate(iso).getUTCMonth() + 1, d = toDate(iso).getUTCDate();
-    const name = [12, 1, 2].includes(m) ? 'зима' : m <= 5 ? 'весна' : m <= 8 ? 'лето' : 'осень';
-    const idx = { 'зима': [12, 1, 2], 'весна': [3, 4, 5], 'лето': [6, 7, 8], 'осень': [9, 10, 11] }[name].indexOf(m);
-    const phase = idx === 0 ? (d <= 10 ? 'начало' : 'первая половина') : idx === 1 ? 'середина' : (d >= 20 ? 'конец' : 'вторая половина');
-    return { name, phase, hint: SEASON_HINTS[name] };
-}
+  // Блок праздника для обычных ответов модели
+  function buildHolidayInjection(st) {
+    ensureHolidayState(st);
+    var out = [];
+    var hol = st.holiday;
+    var today = st.time.date;
+    if (hol && !hol.finished && today) {
+      var lines = ['[Праздничное событие: ' + hol.emoji + ' ' + hol.name + ' — ' + whenText(hol, today) + '.'];
+      if (hol.vibe) lines.push('Атмосфера вокруг: ' + hol.vibe + '.');
+      var open = hol.tasks.map(function (x, i) { return { x: x, n: i + 1 }; }).filter(function (o) { return !o.x.hidden; });
+      lines.push('Праздничные традиции, которые игрок может выполнить (персонажи могут предлагать, но не навязывай):');
+      open.forEach(function (o) { lines.push(o.n + '. ' + o.x.text + (o.x.done ? ' — уже сделано' : '')); });
+      var sec = hol.tasks.map(function (x, i) { return { x: x, n: i + 1 }; }).filter(function (o) { return o.x.hidden && !o.x.done; });
+      if (sec.length) lines.push('Секретная задача (игрок о ней не знает; создавай для неё ненавязчивые поводы, не раскрывай прямо): ' + sec.map(function (o) { return o.n + '. ' + o.x.text; }).join('; '));
+      lines.push('Служебные метки: если в твоём ответе одна из задач по-настоящему выполнена — допиши в самом конце ответа <!--✓номер-->. Если в ответе наступил следующий день — допиши <!--день+1--> (или +N, если прошло несколько дней). Метки невидимы для игрока; не упоминай их в тексте.]');
+      out.push(lines.join('\n'));
+    }
+    var traces = st.traces.filter(function (x) { return today && today <= x.until; });
+    if (traces.length) out.push('[Следы недавних праздников — они ещё заметны в сцене: ' + traces.map(function (x) { return x.text; }).join(' ') + ']');
+    if (st.memories.length) out.push('[Воспоминания о прошлых праздниках (персонажи могут на них ссылаться): ' + st.memories.slice(-5).map(function (m) { return m.text; }).join(' ') + ']');
+    return out.join('\n\n');
+  }
 
-// Разбор даты из ответа модели или ввода: 2025-02-14, 14.02.2025, 14.02, «14 февраля 2025», «14 февраля»
-function parseDateText(text, refIso) {
-    const t = String(text || '').trim().toLowerCase();
-    let y, m, d;
-    let mm = t.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
-    if (mm) [y, m, d] = [Number(mm[1]), Number(mm[2]), Number(mm[3])];
-    if (!mm && (mm = t.match(/(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?/))) {
-        d = Number(mm[1]); m = Number(mm[2]);
-        if (mm[3]) y = Number(mm[3].length === 2 ? '20' + mm[3] : mm[3]);
-    }
-    if (!m) {
-        mm = t.match(/(\d{1,2})\s+([а-яё]+)(?:\s+(\d{4}))?/);
-        if (mm) {
-            const mi = MONTHS_GEN.findIndex(x => mm[2].startsWith(x.slice(0, 3)));
-            if (mi >= 0) { d = Number(mm[1]); m = mi + 1; if (mm[3]) y = Number(mm[3]); }
-        }
-    }
-    if (!m || !d || m > 12 || d > 31) return null;
-    if (!y) {
-        // год не указан — берём ближайшую такую дату не раньше текущей даты истории
-        const ref = refIso || toIso(new Date());
-        y = toDate(ref).getUTCFullYear();
-        if (ymd(y, m, d) < ref) y += 1;
-    }
-    const iso = ymd(y, m, d);
-    return toDate(iso).getUTCMonth() + 1 === m ? iso : null;
-}
+  function fullInjection(st) {
+    return [buildTimeInjection(st), buildHolidayInjection(st)].filter(Boolean).join('\n\n');
+  }
 
-// «+3 дня», «2 недели», «месяц», «полгода»
-function parseDuration(text) {
-    const t = String(text || '').toLowerCase().replace(',', '.');
-    const mm = t.match(/(\d+(?:\.\d+)?)?\s*(дн|ден|сут|недел|нед|месяц|мес|год|лет|полгода)/);
-    if (!mm) return null;
-    if (mm[2] === 'полгода') return { months: 6 };
-    const n = mm[1] ? Number(mm[1]) : 1;
-    if (/^(дн|ден|сут)/.test(mm[2])) return { days: Math.round(n) };
-    if (/^нед/.test(mm[2])) return { days: Math.round(n * 7) };
-    if (/^мес/.test(mm[2])) return { months: Math.round(n) };
-    return { months: Math.round(n * 12) };
-}
-
-function applyDuration(iso, dur) {
-    return dur.months ? addMonths(iso, dur.months) : addDays(iso, dur.days);
-}
-
-function placeLine(st) {
-    const t = st.time;
-    const country = COUNTRIES[t.country]?.name || t.countryName || '';
-    return [t.city, country].filter(Boolean).join(', ');
-}
-
-function holidayLine(h, today) {
-    const when = h.ongoing
-        ? (h.start === h.end ? 'сегодня' : `идёт сейчас (до ${formatDate(h.end, false)})`)
-        : h.inDays === 1 ? 'завтра' : `через ${daysWord(h.inDays)} (${formatDate(h.start, false)})`;
-    return `— ${h.name}: ${when}${h.note ? ` — ${h.note}` : ''}`;
-}
-
-// Шапка для обычных ответов
-function buildTimeInjection(st) {
-    const t = st.time;
-    if (!st.direction.time || (!t.date && !placeLine(st))) return '';
-    const lines = ['[Время и место истории — держись их, даже если давно не упоминались.'];
-    if (t.date) {
-        const s = season(t.date);
-        lines.push(`Сейчас: ${weekday(t.date)}, ${formatDate(t.date)}. ${s.name[0].toUpperCase() + s.name.slice(1)} (${s.phase}): ${s.hint}.`);
-    }
-    const place = placeLine(st);
-    if (place) lines.push(`Место: ${place}. Еда, деньги, бытовые мелочи, обращения, праздники — местные; не переноси реалии других стран.`);
-    if (t.flavor) lines.push(`Местный колорит: ${t.flavor}`);
-    if (t.date) {
-        const up = upcoming(st, 21);
-        if (up.length) {
-            lines.push('Праздники и события рядом (персонажи о них знают; разыгрывать не обязательно, но игнорировать странно):');
-            up.slice(0, 4).forEach(h => lines.push(holidayLine(h, t.date)));
-        }
-    }
-    return lines.join('\n') + ']';
-}
-
-// Раздел для размышления
-function buildTimeSection(st) {
-    if (!st?.direction?.time) return '';
-    const t = st.time;
-    const lines = ['Время и место. Календарь ведёт код — ты только сообщаешь изменения.'];
-    if (t.date) {
-        lines.push(`Последняя известная дата истории: ${weekday(t.date)}, ${formatDate(t.date)}.`);
-    } else {
-        lines.push('Дата истории ещё не задана. Определи её по чату (упоминания месяца, погоды, праздников, сезона). Если точных подсказок нет — выбери правдоподобную дату, которая подходит к происходящему, и задай её командой DATE.');
-    }
-    const place = placeLine(st);
-    lines.push(place ? `Место: ${place}.` : 'Место ещё не задано. Определи страну и город по чату и задай командой PLACE.');
-    if (t.date) {
-        const up = upcoming(st, 45);
-        if (up.length) {
-            lines.push('Ближайшие праздники и события:');
-            up.slice(0, 6).forEach(h => lines.push(holidayLine(h, t.date)));
-            lines.push('Если праздник или смена сезона хорошо ложатся в историю, можешь завести под них задумку ADD — в духе жанра.');
-        }
-    }
-    lines.push('');
-    lines.push('Команды для времени и места:');
-    lines.push('TIME +N дней / недель / месяцев — сколько сюжетного времени прошло в чате с последней известной даты (оцени по событиям: ночёвки, «на следующий день», таймскипы). Если прошло меньше суток — не пиши ничего.');
-    lines.push('DATE ДД.ММ.ГГГГ — если в чате прямо названа дата или нужно задать её впервые.');
-    lines.push('PLACE Страна: Город — если место задано впервые или персонажи переехали.');
-    if (!t.flavor && (t.country || t.countryName)) {
-        lines.push('LOCAL: 2–3 предложения о местном колорите этого места — типичная еда, валюта, транспорт, климат, бытовые привычки и манера общения. Нужно, чтобы не путать реалии разных стран.');
-    }
+  // Строки для плановой проверки: подстраховка, если модель забыла поставить метку
+  function holidayCheckSection(st) {
+    ensureHolidayState(st);
+    var hol = st.holiday;
+    if (!hol || hol.finished) return '';
+    var lines = ['Праздник «' + hol.name + '», задачи:'];
+    hol.tasks.forEach(function (x, i) { lines.push((i + 1) + '. ' + x.text + (x.hidden ? ' (секретная)' : '') + (x.done ? ' — выполнено' : '')); });
+    lines.push('TASK номер — если задача уже выполнена в чате, но выше не отмечена.');
     return lines.join('\n');
-}
+  }
 
-// Обработка команд TIME / DATE / PLACE / LOCAL. Возвращает true, если строка распознана.
-function applyTimeCommand(st, line, res) {
-    const t = st.time;
-    let m;
-    if ((m = line.match(/^TIME\s*[:：]?\s*\+?\s*(.+)$/i))) {
-        if (!st.direction.time || !t.date) return true;
-        const dur = parseDuration(m[1]);
-        if (dur && (dur.days > 0 || dur.months > 0)) {
-            const before = t.date;
-            t.date = applyDuration(t.date, dur);
-            res.timeMoved = daysBetween(before, t.date);
-        }
-        return true;
+  function markTask(st, n, res) {
+    var hol = st.holiday;
+    if (!hol || hol.finished) return;
+    var x = hol.tasks[Number(n) - 1];
+    if (!x || x.done) return;
+    x.done = true;
+    (res.tasksDone = res.tasksDone || []).push(x);
+  }
+
+  // Метки в обычном ответе модели: <!--✓2-->, <!--день+1-->
+  var TAG_RE = /<!--\s*(✓|v|done)\s*#?(\d+)\s*-->|<!--\s*(день|day)\s*\+\s*(\d+)\s*-->/gi;
+  function applyReplyTags(st, text, res) {
+    var m;
+    TAG_RE.lastIndex = 0;
+    var found = false;
+    while ((m = TAG_RE.exec(String(text || '')))) {
+      found = true;
+      if (m[2]) markTask(st, m[2], res);
+      else if (m[4] && st.time.date) {
+        var n = Math.min(60, Number(m[4]) || 1);
+        st.time.date = addDays(st.time.date, n);
+        res.timeMoved = (res.timeMoved || 0) + n;
+      }
     }
-    if ((m = line.match(/^DATE\s*[:：]?\s*(.+)$/i))) {
-        if (!st.direction.time) return true;
-        const iso = parseDateText(m[1], t.date);
-        if (iso) {
-            if (t.date && iso !== t.date) res.timeMoved = daysBetween(t.date, iso);
-            else if (!t.date) res.dateSet = iso;
-            t.date = iso;
-        }
-        return true;
+    return found;
+  }
+  function stripTags(text) {
+    return String(text || '').replace(TAG_RE, '').replace(/\s+$/, '');
+  }
+
+  function tierOf(hol) {
+    var open = hol.tasks.filter(function (x) { return !x.hidden; });
+    var done = open.filter(function (x) { return x.done; }).length;
+    var secret = hol.tasks.some(function (x) { return x.hidden && x.done; });
+    var share = open.length ? done / open.length : 0;
+    var tier = done === 0 ? 'anti' : share < 0.5 ? 'bronze' : share < 1 ? 'silver' : 'gold';
+    return { tier: tier, done: done, total: open.length, secret: secret };
+  }
+  var TIER_NAMES = { anti: 'антимедаль', bronze: 'бронза', silver: 'серебро', gold: 'золото' };
+  var TIER_ICONS = { anti: '🥔', bronze: '🥉', silver: '🥈', gold: '🥇' };
+
+  function finalePrompt(hol, st, names) {
+    var t = tierOf(hol);
+    return [
+      '[OOC: Пауза в ролевой игре. Ты — помощник автора. Праздник «' + hol.name + '» закончился. Перечитай, как он прошёл в чате (если он прошёл за кадром из-за таймскипа — оцени, как он мог пройти).',
+      'Задачи праздника: ' + hol.tasks.map(function (x) { return '«' + x.text + '»' + (x.hidden ? ' (секретная)' : '') + ' — ' + (x.done ? 'выполнено' : 'нет'); }).join('; ') + '.',
+      'Итог: выполнено ' + t.done + ' из ' + t.total + ' открытых традиций' + (t.secret ? ', и секретная задача тоже' : '') + '. Уровень медали: ' + TIER_NAMES[t.tier] + '.',
+      'Ответь ровно тремя строками:',
+      'MEDAL: эмодзи | смешное название | одна строка с юмором о том, как ' + names.user + ' на самом деле провёл(а) этот праздник' + (t.tier === 'anti' ? ' (это антимедаль за то, что праздник прошёл мимо)' : ''),
+      'OUTCOME: 1–2 предложения о том, как это отразилось на отношениях: кто доволен, кто разочарован. ' + (t.tier === 'anti' || t.tier === 'bronze' ? 'Добавь лёгкие последствия в духе истории.' : 'Отметь, чем праздник запомнится.'),
+      'TRACE: что осталось от праздника в ближайшие дни — предмет, фото, остатки еды, следы веселья.]'
+    ].join('\n').replace(/\{\{user\}\}/gi, names.user);
+  }
+
+  function applyFinale(hol, st, raw) {
+    var t = tierOf(hol);
+    var text = String(raw || '').replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u2800\u3000\u3164\uFEFF]/g, ' ').replace(/\*\*/g, '');
+    var medal = text.match(/MEDAL\s*[:：—–-]\s*(.+)/i);
+    var outcome = text.match(/OUTCOME\s*[:：—–-]\s*(.+)/i);
+    var trace = text.match(/TRACE\s*[:：—–-]\s*(.+)/i);
+    var parts = medal ? medal[1].split('|').map(function (s) { return s.trim(); }) : [];
+    var m = {
+      emoji: parts[0] || hol.emoji,
+      title: parts[1] || (TIER_NAMES[t.tier][0].toUpperCase() + TIER_NAMES[t.tier].slice(1) + ': ' + hol.name),
+      desc: parts[2] || ('Выполнено ' + t.done + ' из ' + t.total + ' традиций.'),
+      tier: t.tier, secret: t.secret, holiday: hol.name, date: hol.end
+    };
+    st.medals.push(m);
+    var year = hol.end.slice(0, 4);
+    if (outcome) st.memories.push({ text: hol.name + ' ' + year + ': ' + outcome[1].trim(), date: hol.end });
+    if (st.memories.length > 12) st.memories.splice(0, st.memories.length - 12);
+    if (trace) st.traces.push({ text: trace[1].trim(), until: addDays(hol.end, 5) });
+    st.traces = st.traces.filter(function (x) { return x.until >= (st.time.date || x.until); });
+    hol.finished = true;
+    st.holidayDone[hol.key] = true;
+    addEvent(st, hol.end, hol.name + ': ' + (outcome ? outcome[1].trim() : 'праздник прошёл') + ' (медаль «' + m.title + '»)');
+    return m;
+  }
+
+  // Напоминания: за leadDays дней и в сам день — по одному разу
+  function dueReminders(st, leadDays) {
+    ensureHolidayState(st);
+    var out = [];
+    if (!st.time.date) return out;
+    upcoming(st, leadDays).forEach(function (h) {
+      var key = h.name + '|' + h.start;
+      var stage = h.ongoing || h.inDays === 0 ? 'today' : 'soon';
+      var seen = st.notified[key] || [];
+      if (seen.indexOf(stage) >= 0) return;
+      seen.push(stage);
+      st.notified[key] = seen;
+      var tr = traditionsFor(h, st.time.country);
+      var emoji = (tr && tr.emoji) || '📅';
+      out.push(stage === 'today'
+        ? emoji + ' Сегодня — ' + h.name
+        : emoji + ' ' + (h.inDays === 1 ? 'Завтра' : 'Через ' + daysWord(h.inDays)) + ' — ' + h.name);
+    });
+    var keys = Object.keys(st.notified);
+    if (keys.length > 60) keys.slice(0, keys.length - 60).forEach(function (k) { delete st.notified[k]; });
+    return out;
+  }
+
+  // ---------- Движок праздника (общий для всех версий) ----------
+  // io: { generate(prompt, withContext) -> текст, toast(text), names, lead, events, showToasts }
+  // Меняет st на месте; сохранение — на стороне вызывающего.
+  async function holidayProgress(st, io, opts) {
+    opts = opts || {};
+    ensureHolidayState(st);
+    if (!st.time.date) return;
+    var reminders = dueReminders(st, io.lead);
+    if (io.showToasts) reminders.forEach(function (x) { io.toast(x); });
+    if (!io.events) return;
+    var hol = st.holiday;
+    if (hol && !hol.finished && (opts.finish || st.time.date > hol.end)) {
+      var raw = '';
+      try { raw = await io.generate(finalePrompt(hol, st, io.names), true); } catch (e) { raw = ''; }
+      if (!hol.finished) {
+        var medal = applyFinale(hol, st, raw);
+        io.toast('🏅 ' + medal.emoji + ' «' + medal.title + '» — ' + medal.desc);
+      }
     }
-    if ((m = line.match(/^PLACE\s*[:：]?\s*(.+)$/i))) {
-        if (!st.direction.time) return true;
-        let countryText = m[1], city = '';
-        const sep = m[1].match(/^\[?([^\]:：]+?)\]?\s*[:：—–]\s*(.+)$/);
-        if (sep) { countryText = sep[1]; city = sep[2]; }
-        else if (m[1].includes(',')) { const parts = m[1].split(','); countryText = parts.pop(); city = parts.join(','); }
-        const code = detectCountry(countryText) || detectCountry(m[1]);
-        const newCountryName = code ? '' : countryText.trim();
-        if (code !== t.country || newCountryName !== t.countryName) {
-            if (!t.flavorLocked) t.flavor = '';
-            res.placeSet = true;
-        }
-        if (city.trim() !== t.city) res.placeSet = true;
-        t.country = code;
-        t.countryName = newCountryName;
-        t.city = city.trim();
-        return true;
+    var found = holidayToActivate(st, io.lead);
+    if (found) {
+      var h = newHoliday(found);
+      var raw2 = '';
+      try { raw2 = await io.generate(activationPrompt(h, st, io.names), true); } catch (e) { raw2 = ''; }
+      applyActivation(h, raw2);
+      st.holiday = h;
+      var open = h.tasks.filter(function (x) { return !x.hidden; }).length;
+      io.toast(h.emoji + ' Праздничное событие: ' + h.name + '\nТрадиций: ' + open + (h.tasks.length > open ? ' + 🔒 секретная' : ''));
     }
-    if ((m = line.match(/^LOCAL\s*[:：—–-]\s*(.+)$/i))) {
-        if (st.direction.time && !t.flavorLocked) t.flavor = m[1].trim();
-        return true;
+  }
+
+  function holidaySummary(res) {
+    var out = [];
+    (res.tasksDone || []).forEach(function (x) { out.push(x.hidden ? '🔓 Секретная задача выполнена: ' + x.text : '✓ ' + x.text); });
+    return out;
+  }
+
+  // Дни рождения
+  function normNameB(x) { return String(x || '').trim().toLowerCase().replace(/ё/g, 'е'); }
+  function hasBday(st, who) {
+    var k = normNameB(who);
+    return st.time.custom.some(function (c) { return c.bday && normNameB(c.who) === k; });
+  }
+  function bdaySection(st, userName, charNames) {
+    var known = st.time.custom.filter(function (c) { return c.bday; }).map(function (c) { var md = c.md.split('-').map(Number); return c.who + ' — ' + md[1] + ' ' + MONTHS_GEN[md[0] - 1]; });
+    var lines = ['Дни рождения' + (known.length ? ' (уже известны: ' + known.join(', ') + ')' : '') + '.'];
+    var missing = [userName].concat(charNames || []).filter(function (n) { return n && !hasBday(st, n); });
+    if (missing.length) lines.push('Ещё не заданы для: ' + missing.join(', ') + '. Найди дату в карточке персонажа, описании персоны или в чате; если её нигде нет — придумай правдоподобную, подходящую персонажу.');
+    lines.push('BDAY Имя: ДД.ММ — день рождения ' + (missing.length ? 'для них, а также ' : '') + 'для значимого NPC, если о нём есть сведения в истории или он важен для сюжета.');
+    return lines.join('\n');
+  }
+  // Команды TASK и BDAY. Возвращает true, если строка распознана.
+  function applyEventCommand(st, line, res) {
+    var m = line.match(/^TASK\s*✓?\s*#?\s*(\d+)/i);
+    if (m) { markTask(st, m[1], res); return true; }
+    m = line.match(/^BDAY\s*[:：]?\s*\[?([^\]:：]{1,60}?)\]?\s*[:：—–-]\s*(.+)$/i);
+    if (m) {
+      var who = m[1].trim();
+      var iso = parseDateText(m[2], '2000-01-01');
+      if (iso && !hasBday(st, who)) {
+        st.time.custom.push({ name: 'День рождения: ' + who, md: iso.slice(5), bday: true, who: who });
+        (res.bdays = res.bdays || []).push(who);
+      }
+      return true;
     }
     return false;
-}
+  }
+
 
 const GENRES = ['Комедия', 'Повседневность', 'Романтика', 'Эротика', 'Драма', 'Ангст', 'Приключения', 'Экшн', 'Мистика', 'Ужасы', 'Детектив'];
 
@@ -513,6 +892,8 @@ const defaults = {
     maxNpcs: 20,
     maxArcs: 6,
     minStimuli: 2,
+    events: true,
+    leadDays: 3,
     showToasts: true,
     hideSpoilers: false,
     thinkPrompt: DEFAULT_THINK,
@@ -584,6 +965,8 @@ function store() {
     if (st.direction.time === undefined) st.direction.time = true;
     if (!st.time) st.time = { date: '', country: '', countryName: '', city: '', flavor: '', flavorLocked: false, custom: [] };
     if (!Array.isArray(st.time.custom)) st.time.custom = [];
+    if (!Array.isArray(st.time.timeline)) st.time.timeline = [];
+    ensureHolidayState(st);
     return st;
 }
 
@@ -691,6 +1074,15 @@ function formatArcs(st, forThink = false) {
     return lines.length ? lines.join('\n') : '(пока нет)';
 }
 
+// Если все арки касаются только главного персонажа — подталкиваем модель к NPC
+function npcArcNudge(st) {
+    const charName = ctx().name2 || '';
+    const norm = x => String(x || '').toLowerCase().replace(/ё/g, 'е');
+    const arcsAboutNpc = st.arcs.filter(a => norm(a.who) !== norm(charName)).length;
+    if (arcsAboutNpc || !st.npcs.length) return '';
+    return `\nСейчас ни одной арки нет ни у NPC, ни у их отношений. Посмотри на карточки NPC (${st.npcs.slice(0, 6).map(n => n.name).join(', ')}) и на линии между ними — заведи арку хотя бы для одной, если в истории для неё есть почва.\n`;
+}
+
 function buildArcSection(st) {
     if (!st?.direction?.arcs) return '';
     const need = Math.max(1, Number(settings().minStimuli) || 2);
@@ -702,9 +1094,11 @@ ${stages}
 
 Текущие арки:
 ${formatArcs(st, true)}
-
+${npcArcNudge(st)}
 Команды для них (с новой строки, вместе с остальными):
 ARC [Имя]: черта сейчас → во что может развиться. Если персонаж уже заметно меняется под влиянием событий или отношений — заведи арку; если почвы нет — не выдумывай.
+ARC [Имя + Имя]: как сейчас устроены их отношения → куда они могут прийти. Так же веди линии отношений между NPC: дружба, соперничество, роман, любовный треугольник (тогда указывай всех троих).
+Арки бывают не только у {{char}}: значимые NPC и их отношения друг с другом тоже меняются, даже когда {{user}} не рядом. Особенно держи линии, о которых игрок прямо заявлял (например, «у них будет любовный треугольник»).
 STIMULUS #A1: что в чате подтолкнуло изменение (только то, что действительно произошло)
 SHIFT #A1: как теперь проявляется характер — переход на следующую стадию. Возможен, только когда с прошлого сдвига накопилось не меньше ${need} стимулов.
 REGRESS #A1: что отбросило персонажа назад
@@ -715,7 +1109,7 @@ DROP #A1 — арка больше не актуальна
 function buildIntrigueSection(st) {
     if (!st?.direction?.intrigues) return '';
     const max = Math.max(1, Number(settings().maxIntrigues) || 5);
-    return `Тайны и интриги. Параллельно задумкам ты ведёшь скрытые сюжетные линии: тайны, загадки, слухи (правдивые или ложные), заговоры и интриги NPC. Записывай суть так, как её знает только автор.
+    return `Тайны и интриги. Параллельно задумкам ты ведёшь скрытые сюжетные линии: тайны, загадки, слухи (правдивые или ложные), заговоры и интриги NPC. Записывай суть так, как её знает только автор. Это касается не только {{char}} и {{user}}: у NPC свои секреты, романы и сплетни друг о друге — их тоже заводи.
 
 Текущие тайны:
 ${formatIntrigues(st.intrigues)}
@@ -760,7 +1154,7 @@ function updateInjection() {
     const showIntrigues = st?.direction?.intrigues && st.intrigues.length;
     const showNpcs = st?.direction?.npcs && st.npcs.length;
     const showArcs = st?.direction?.arcs && (st.arcs.length || st.evolved.length);
-    const timeBlock = st ? buildTimeInjection(st) : '';
+    const timeBlock = st && st.direction.time ? [buildTimeInjection(st), s.events ? buildHolidayInjection(st) : ''].filter(Boolean).join('\n\n') : '';
     if (!s.enabled || !st || (!st.notes.length && !showIntrigues && !showNpcs && !showArcs && !timeBlock)) {
         c.setExtensionPrompt(INJECT_KEY, '', POS_IN_CHAT, 0);
         return;
@@ -869,6 +1263,7 @@ function parseAndApply(raw) {
         line = line.trim().replace(/^[-*•>\s]+/, '').replace(/^`+|`+$/g, '');
         if (!line) continue;
         if (applyTimeCommand(st, line, res)) continue;
+        if (st.direction.time && applyEventCommand(st, line, res)) continue;
 
         let m = line.match(/^ADD\s*(?:\[([^\]]{1,40})\])?\s*[:：—–-]\s*(.+)$/i);
         if (m) {
@@ -1048,6 +1443,9 @@ function report(res, manual, raw) {
     if (res.timeMoved) parts.push(`📅 ${res.timeMoved > 0 ? 'прошло' : 'назад на'} ${daysWord(Math.abs(res.timeMoved))} → ${formatDate(store().time.date)}`);
     else if (res.dateSet) parts.push(`📅 дата истории: ${formatDate(res.dateSet)}`);
     if (res.placeSet) parts.push(`📍 место: ${placeLine(store())}`);
+    if (res.events) parts.push(`📜 в хронику: ${res.events.length}`);
+    if (res.bdays) parts.push(`🎂 дни рождения: ${res.bdays.join(', ')}`);
+    holidaySummary(res).forEach(x => parts.push(escapeHtml(x)));
     if (!parts.length) {
         if (/^NONE[.!]?$/i.test(clean.replace(/\*\*/g, ''))) {
             if (manual) toastr.info('Модель решила ничего не записывать', 'Блокнот рассказчика');
@@ -1089,11 +1487,15 @@ async function think(manual = false) {
 
     try {
         const tpl = ensureSections(s.thinkPrompt);
-        const raw = await quietGenerate(fillTemplate(tpl, st.notes, buildDirection(st), buildIntrigueSection(st), buildNpcSection(st), buildArcSection(st), buildTimeSection(st)));
+        const raw = await quietGenerate(fillTemplate(tpl, st.notes, buildDirection(st), buildIntrigueSection(st), buildNpcSection(st), buildArcSection(st), buildTimeSectionFull(st)));
         if (ctx().chatId !== chatIdAtStart) return; // чат сменили, пока модель думала
         st.lastRaw = String(raw ?? '');
         const res = parseAndApply(raw);
         report(res, manual, raw);
+        if (st.direction.time) {
+            await fillFlavor(st, false);
+            await holidayStep(st);
+        }
     } catch (err) {
         console.error('[npc_notebook]', err);
         toastr.error(String(err?.message || err), 'Блокнот рассказчика: ошибка');
@@ -1106,6 +1508,25 @@ async function think(manual = false) {
         updateInjection();
         renderPanel();
     }
+}
+
+function storyNames() {
+    const c = ctx();
+    let chars = [];
+    try {
+        if (c.groupId && Array.isArray(c.groups)) {
+            const g = c.groups.find(x => x.id === c.groupId);
+            chars = (g?.members || []).map(av => c.characters.find(ch => ch.avatar === av)?.name).filter(Boolean);
+        }
+    } catch (e) { /* ignore */ }
+    if (!chars.length && c.name2) chars = [c.name2];
+    return { user: c.name1 || 'игрок', char: chars.join(', ') || 'персонаж', chars };
+}
+
+function buildTimeSectionFull(st) {
+    if (!st?.direction?.time) return '';
+    const names = storyNames();
+    return [buildTimeSection(st), bdaySection(st, names.user, names.chars), settings().events ? holidayCheckSection(st) : ''].filter(Boolean).join('\n\n');
 }
 
 // Если в своём промпте нет нужных разделов, вставляем их перед финальной инструкцией
@@ -1169,7 +1590,103 @@ async function rerollNote(id, kind = 'note') {
     }
 }
 
-function onMessageReceived() {
+// Колорит — отдельным запросом (модель не пропустит его, как строку среди многих команд)
+async function fillFlavor(st, manual) {
+    const t = st.time;
+    if (!placeLine(st) || (!manual && (t.flavor || t.flavorLocked))) return false;
+    try {
+        const text = cleanFlavor(await quietGenerate(flavorPrompt(st)));
+        if (!text) { if (manual) toastr.warning('Модель не написала колорит — попробуй ещё раз', 'Блокнот рассказчика'); return false; }
+        t.flavor = text;
+        t.flavorLocked = false;
+        if (manual) toastr.success('🧭 Колорит обновлён', 'Блокнот рассказчика');
+        return true;
+    } catch (err) {
+        if (manual) toastr.error(String(err?.message || err), 'Блокнот рассказчика: ошибка');
+        return false;
+    }
+}
+
+// Напоминания, итог закончившегося праздника, запуск нового. Вызывать внутри busy.
+async function holidayStep(st, opts) {
+    const s = settings();
+    await holidayProgress(st, {
+        generate: p => quietGenerate(p),
+        toast: x => toastr.info(escapeHtml(x).replace(/\n/g, '<br>'), 'Блокнот рассказчика', { escapeHtml: false, timeOut: 9000 }),
+        names: storyNames(),
+        lead: Math.max(1, Number(s.leadDays) || 3),
+        events: !!s.events,
+        showToasts: !!s.showToasts,
+    }, opts);
+}
+
+async function runHolidayStep(opts) {
+    if (busy) return;
+    const st = store();
+    if (!st || !st.direction.time) return;
+    const chatId = ctx().chatId;
+    busy = true;
+    setStatus('Проверяю праздники…');
+    ctx().setExtensionPrompt(INJECT_KEY, '', POS_IN_CHAT, 0);
+    try {
+        await holidayStep(st, opts);
+    } catch (err) {
+        console.error('[npc_notebook]', err);
+    } finally {
+        if (ctx().chatId === chatId) await ctx().saveMetadata();
+        busy = false;
+        updateInjection();
+        renderPanel();
+    }
+}
+
+async function runFlavor() {
+    if (busy) return;
+    const st = store();
+    if (!st) return;
+    busy = true;
+    setStatus('Модель пишет местный колорит…');
+    ctx().setExtensionPrompt(INJECT_KEY, '', POS_IN_CHAT, 0);
+    try {
+        await fillFlavor(st, true);
+        await ctx().saveMetadata();
+    } finally {
+        busy = false;
+        updateInjection();
+        renderPanel();
+    }
+}
+
+// Метки в ответе модели: <!--✓2--> (задача праздника выполнена), <!--день+1--> (наступил следующий день)
+async function processReplyTags() {
+    const st = store();
+    const s = settings();
+    if (!st || !s.enabled || !st.direction.time) return false;
+    const c = ctx();
+    const id = c.chat.length - 1;
+    const msg = c.chat[id];
+    if (!msg || msg.is_user || typeof msg.mes !== 'string' || !msg.mes.includes('<!--')) return false;
+    const res = {};
+    if (!applyReplyTags(st, msg.mes, res)) return false;
+    msg.mes = stripTags(msg.mes);
+    try {
+        if (typeof c.updateMessageBlock === 'function') c.updateMessageBlock(id, msg);
+        await c.saveChat();
+    } catch (e) { /* метки невидимы, можно оставить */ }
+    const parts = holidaySummary(res);
+    if (res.timeMoved) parts.unshift(`📅 прошло ${daysWord(res.timeMoved)} → ${formatDate(st.time.date)}`);
+    if (parts.length && s.showToasts) toastr.success(parts.map(escapeHtml).join('<br>'), 'Блокнот рассказчика', { escapeHtml: false, timeOut: 8000 });
+    await c.saveMetadata();
+    if (res.timeMoved) await runHolidayStep();
+    return true;
+}
+
+async function onMessageReceived() {
+    try { await processReplyTags(); } catch (e) { console.error('[npc_notebook] reply tags', e); }
+    onMessageReceivedThink();
+}
+
+function onMessageReceivedThink() {
     updateInjection();
     renderPanel();
     const s = settings();
@@ -1201,6 +1718,8 @@ const PANEL_HTML = `
       <div class="nnb-row"><label for="nnb_max">Максимум активных записей</label><input type="number" min="1" max="50" class="text_pole" id="nnb_max"></div>
       <div class="nnb-row"><label for="nnb_max_int">Максимум активных тайн</label><input type="number" min="1" max="20" class="text_pole" id="nnb_max_int"></div>
       <div class="nnb-row"><label for="nnb_min_stim">Стимулов для сдвига характера</label><input type="number" min="1" max="10" class="text_pole" id="nnb_min_stim"></div>
+      <label class="checkbox_label"><input type="checkbox" id="nnb_events"> Праздничные события (традиции и медали)</label>
+      <div class="nnb-row"><label for="nnb_lead">За сколько дней напоминать о праздниках</label><input type="number" min="1" max="7" class="text_pole" id="nnb_lead"></div>
       <div class="nnb-row"><label for="nnb_role">Роль вставки</label>
         <select class="text_pole" id="nnb_role">
           <option value="0">system</option>
@@ -1601,6 +2120,7 @@ function renderTime(st) {
     const det = $('<details open class="nnb-section"><summary>📅 Время и место</summary></details>');
     root.append(det);
 
+    renderHolidayCard(st, det);
     const head = $('<div class="nnb-time-now"></div>');
     if (t.date) {
         const s = season(t.date);
@@ -1619,13 +2139,14 @@ function renderTime(st) {
       </div>`);
     dateRow.find('.nnb-date').val(t.date).on('change', async function () {
         const v = $(this).val();
-        if (/^\d{4}-\d{2}-\d{2}$/.test(v)) { t.date = v; await commit(); }
+        if (/^\d{4}-\d{2}-\d{2}$/.test(v)) { t.date = v; await commit(); runHolidayStep(); }
     });
     dateRow.find('.nnb-shift').on('click', async function () {
         const base = t.date || toIso(new Date());
         const d = Number($(this).data('d') || 0), mo = Number($(this).data('m') || 0);
         t.date = mo ? addMonths(base, mo) : addDays(base, d);
         await commit();
+        runHolidayStep();
     });
     det.append(dateRow);
 
@@ -1647,6 +2168,7 @@ function renderTime(st) {
     const placeChanged = async () => {
         if (!t.flavorLocked) t.flavor = '';
         await commit();
+        if (placeLine(st) && !t.flavor) runFlavor();
     };
     sel.on('change', async function () {
         const v = $(this).val();
@@ -1666,6 +2188,12 @@ function renderTime(st) {
         await commit();
     });
     det.append(flavor);
+    const genFlavor = $('<div class="menu_button"><i class="fa-solid fa-compass"></i> Сгенерировать колорит</div>');
+    genFlavor.on('click', () => {
+        if (!placeLine(st)) return toastr.warning('Сначала укажи страну или город', 'Блокнот рассказчика');
+        runFlavor();
+    });
+    det.append(genFlavor);
 
     if (t.date) {
         const up = upcoming(st, 60);
@@ -1699,6 +2227,66 @@ function renderTime(st) {
         await commit();
     });
     det.append(add);
+    renderChronicleAndMedals(st, det);
+}
+
+function renderHolidayCard(st, det) {
+    const hol = st.holiday;
+    if (!settings().events || !hol || hol.finished || !st.time.date) return;
+    const t = tierOf(hol);
+    const box = $('<div class="nnb-note nnb-event"><div class="nnb-event-title"></div><div class="nnb-meta"></div><div class="nnb-tasks"></div></div>');
+    box.find('.nnb-event-title').text(`${hol.emoji} ${hol.name} — ${whenText(hol, st.time.date)}`);
+    box.find('.nnb-meta').text(`Традиции: ${t.done} из ${t.total}${hol.tasks.some(x => x.hidden) ? ' · есть секретная задача' : ''}`);
+    hol.tasks.forEach(x => {
+        const row = $('<label class="checkbox_label nnb-task"><input type="checkbox"><span></span></label>');
+        row.find('span').text(x.hidden && !x.done ? '🔒 Секретная задача' : `${x.hidden ? '🔓 ' : ''}${x.text}`);
+        row.find('input').prop('checked', !!x.done).on('change', async function () { x.done = $(this).prop('checked'); await commit(); });
+        box.find('.nnb-tasks').append(row);
+    });
+    const fin = $('<div class="menu_button"><i class="fa-solid fa-flag-checkered"></i> Завершить праздник и получить медаль</div>');
+    fin.on('click', () => runHolidayStep({ finish: true }));
+    box.append(fin);
+    det.append(box);
+}
+
+function renderChronicleAndMedals(st, det) {
+    const list = st.time.timeline || [];
+    const chron = $('<details class="nnb-section"><summary></summary></details>');
+    chron.find('summary').text(`📜 Хроника (${list.length})`);
+    if (!list.length) chron.append('<div class="nnb-empty">Здесь будут важные события с датами — модель записывает их при размышлении.</div>');
+    [...list].reverse().forEach(e => {
+        const row = $('<div class="nnb-note"><div class="nnb-meta"></div><div class="nnb-npc-text"></div><div class="nnb-actions"><i class="fa-solid fa-trash" title="Удалить"></i></div></div>');
+        row.find('.nnb-meta').text(formatDate(e.date) + (st.time.date ? ` · ${agoText(daysBetween(e.date, st.time.date))}` : ''));
+        row.find('.nnb-npc-text').text(e.text);
+        row.find('.fa-trash').on('click', async () => { list.splice(list.indexOf(e), 1); await commit(); });
+        chron.append(row);
+    });
+    const add = $('<div class="menu_button"><i class="fa-solid fa-plus"></i> Добавить событие</div>');
+    add.on('click', async () => {
+        const text = await askText('Что произошло?');
+        if (!text || !text.trim()) return;
+        const when = await askText('Когда? Например «14 октября» или «14.10.2024». Пусто — сегодня по истории');
+        if (when === null) return;
+        let date = when.trim() ? parseDateText(when, '1900-01-01') : st.time.date;
+        if (!date) return toastr.warning('Не поняла дату', 'Блокнот рассказчика');
+        if (st.time.date && date > st.time.date && !/\d{4}/.test(when)) date = `${Number(st.time.date.slice(0, 4)) - 1}${date.slice(4)}`;
+        addEvent(st, date, text);
+        await commit();
+    });
+    chron.append(add);
+    det.append(chron);
+
+    if (!st.medals.length) return;
+    const med = $('<details class="nnb-section"><summary></summary></details>');
+    med.find('summary').text(`🏅 Витрина медалей (${st.medals.length})`);
+    [...st.medals].reverse().forEach(m => {
+        const row = $('<div class="nnb-note"><div class="nnb-npc-text"></div><div class="nnb-meta"></div><div class="nnb-npc-status"></div></div>');
+        row.find('.nnb-npc-text').text(`${m.emoji || ''} «${m.title}»${m.secret ? ' ✨' : ''}`);
+        row.find('.nnb-meta').text(`${TIER_ICONS[m.tier] || ''} ${TIER_NAMES[m.tier] || ''} · ${m.holiday} ${String(m.date || '').slice(0, 4)}`);
+        row.find('.nnb-npc-status').text(m.desc);
+        med.append(row);
+    });
+    det.append(med);
 }
 
 async function closeIntrigue(id, status) {
@@ -1763,6 +2351,8 @@ jQuery(async () => {
     bind('nnb_depth', 'depth', 'number');
     bind('nnb_max', 'maxActive', 'number');
     bind('nnb_max_int', 'maxIntrigues', 'number');
+    bind('nnb_events', 'events', 'checkbox');
+    bind('nnb_lead', 'leadDays', 'number');
     bind('nnb_min_stim', 'minStimuli', 'number');
     bind('nnb_role', 'role', 'number');
     bind('nnb_think_prompt', 'thinkPrompt');

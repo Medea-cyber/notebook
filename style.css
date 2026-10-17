@@ -41,3 +41,6 @@
 #nnb_panel .nnb-time-row .menu_button { padding: 4px 8px; margin: 0; }
 #nnb_panel input.nnb-date { width: auto; flex: 1 1 140px; }
 #nnb_panel input.nnb-city { flex: 1 1 120px; width: auto; }
+#nnb_panel .nnb-event { border-color: var(--SmartThemeQuoteColor, #8b78c4); border-width: 2px; }
+#nnb_panel .nnb-event-title { font-weight: bold; font-size: 1.05em; }
+#nnb_panel .nnb-task { margin: 2px 0; }
