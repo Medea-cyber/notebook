@@ -44,3 +44,17 @@
 #nnb_panel .nnb-event { border-color: var(--SmartThemeQuoteColor, #8b78c4); border-width: 2px; }
 #nnb_panel .nnb-event-title { font-weight: bold; font-size: 1.05em; }
 #nnb_panel .nnb-task { margin: 2px 0; }
+#nnb_panel .nnb-task-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+#nnb_panel .nnb-task-row .nnb-actions { gap: 4px; flex: 0 0 auto; }
+#nnb_ff_btn { cursor: pointer; }
+.nnb-pop { text-align: left; display: flex; flex-direction: column; gap: 8px; }
+.nnb-pop h3 { margin: 0 0 4px; text-align: center; }
+.nnb-pop-sub { font-size: 0.9em; opacity: 0.75; }
+.nnb-look { border: 1px solid var(--SmartThemeBorderColor); border-radius: 10px; padding: 8px 10px; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+.nnb-look:hover, .nnb-look:focus { border-color: var(--SmartThemeQuoteColor, #8b78c4); background: color-mix(in srgb, var(--SmartThemeQuoteColor, #8b78c4) 10%, transparent); }
+.nnb-look-title { font-weight: bold; }
+.nnb-look-desc { font-size: 0.92em; opacity: 0.9; margin-top: 2px; }
+.nnb-pop-row { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.nnb-pop-result { font-size: 1em; line-height: 1.4; }
+.nnb-pop-other { font-size: 0.9em; opacity: 0.85; margin: 4px 0; }
+.nnb-pop details summary { cursor: pointer; opacity: 0.85; }

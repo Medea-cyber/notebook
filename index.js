@@ -20,6 +20,8 @@ const DEFAULT_THINK = `[OOC: Пауза в ролевой игре. Сейчас
 
 {{intrigues}}
 
+{{wardrobe}}
+
 Задумки на будущее. Подумай как автор: что ты хочешь, чтобы произошло дальше? Как поведут себя NPC, что хочется выяснить у {{user}} через персонажей, что новое можно придумать про мир? Не каждая задумка должна быть проблемой или угрозой: тёплое, забавное, бытовое тоже двигает историю.
 
 Твои задумки сейчас:
@@ -34,6 +36,9 @@ DROP #номер — задумка больше не подходит
 Привязывай задумки к сюжетным событиям или датам внутри истории, а не к счёту дней от текущего момента. Если в чате был таймскип, проверь каждую запись: что уже случилось бы за кадром — DONE или перепиши как последствие; что потеряло смысл — DROP. Не больше трёх новых ADD.
 
 Ответь ТОЛЬКО командами, каждая с новой строки, без пояснений и без текста роли. Пройди все разделы: если в разделе нечего добавить — пропусти его. Если нечего ни в одном — ответь одним словом: NONE]`;
+
+const INJECT_FF_KEY = 'npc_notebook_ff';
+const FF_MARKER = '[Перемотка:';
 
 const DEFAULT_INJECT = `[Личный блокнот автора. Это твои собственные задумки на будущее сюжета. Не упоминай блокнот и не цитируй его. Вплетай задумки естественно и постепенно, когда момент подходит; не нужно реализовывать всё сразу и не нужно форсировать. Отсчёт «сообщ. назад» — это сообщения чата, а не сюжетное время; в истории могли пройти дни или недели.]
 {{notes}}`;
@@ -635,31 +640,80 @@ const GENRE_HINTS = {
     return null;
   }
 
+  // Настроение секретной задачи — выбирается на удачу
+  var MOODS = {
+    warm: { icon: '🌟', name: 'тёплый сюрприз', rule: 'особенный момент, который сделает праздник запоминающимся в хорошем смысле или продвинет вперёд отношения и линии персонажей: неожиданная приятность, совпадение, маленькое чудо, жест заботы' },
+    chaos: { icon: '🔥', name: 'весёлый хаос', rule: 'забавное происшествие в рамках жанра истории: что-то идёт не по плану, неловкость или суматоха, которую потом будут вспоминать со смехом' }
+  };
+  var SECRET_RULES = 'Это ситуация или событие, а не сценарий: опиши, что произойдёт или что нужно устроить. Не диктуй персонажам реплики, признания и чувства (никаких «заставить X признаться», «X скажет вслух») — как они отреагируют, решится в сцене.';
+
   function newHoliday(found) {
     var classic = shuffle(found.tr.tasks).slice(0, 2).map(function (text) { return { text: text, done: false, hidden: false, kind: 'classic' }; });
     return {
       key: found.key, name: found.h.name, emoji: found.tr.emoji, vibe: found.tr.vibe, note: found.h.note || '',
-      start: found.h.start, end: found.h.end, tasks: classic, finished: false
+      start: found.h.start, end: found.h.end, tasks: classic, finished: false,
+      mood: Math.random() < 0.5 ? 'warm' : 'chaos'
     };
   }
 
-  function activationPrompt(hol, st, names) {
+  function moodOf(hol) { return MOODS[hol && hol.mood] || MOODS.warm; }
+
+  function activationPrompt(hol, st, names, direction) {
+    var mood = moodOf(hol);
     return [
       '[OOC: Пауза в ролевой игре. Ты — помощник автора. Скоро праздник: ' + hol.name + ' (' + formatDate(hol.start, false) + ')' + (placeLine(st) ? ', место: ' + placeLine(st) : '') + '.',
+      direction ? direction + '\n' : '',
       'Классические традиции уже выбраны: ' + hol.tasks.map(function (x) { return '«' + x.text + '»'; }).join(', ') + '.',
-      'Придумай по контексту этой ролевой ещё две праздничные задачи для ' + names.user + ' — связанные с праздником И с персонажами, отношениями, происходящим в истории. Лёгкие, выполнимые за пару сцен, в духе истории.',
+      'Придумай по контексту этой ролевой ещё две праздничные задачи для ' + names.user + ' — связанные с праздником И с персонажами, отношениями, происходящим в истории. Лёгкие, выполнимые за пару сцен, строго в духе направления истории.',
       'STORY: открытая сюжетная задача (игрок её видит)',
-      'SECRET: скрытая задача-сюрприз (игрок её не видит, а ты будешь ненавязчиво создавать для неё поводы)',
+      'SECRET: скрытая задача-сюрприз (игрок её не видит, а ты будешь ненавязчиво создавать для неё поводы). Её настроение — ' + mood.name + ': ' + mood.rule + '. ' + SECRET_RULES,
       'Ответь ровно двумя строками в этом формате, без пояснений.]'
-    ].join('\n');
+    ].filter(Boolean).join('\n');
+  }
+
+  function cleanLine(raw) {
+    return String(raw || '').replace(/[   -​  ⠀　ㅤ﻿]/g, ' ').replace(/\*\*/g, '').replace(/<(think|thinking|reasoning)>[\s\S]*?<\/\1>/gi, '');
   }
 
   function applyActivation(hol, raw) {
-    var text = String(raw || '').replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u2800\u3000\u3164\uFEFF]/g, ' ').replace(/\*\*/g, '');
+    var text = cleanLine(raw);
     var story = text.match(/STORY\s*[:：—–-]\s*(.+)/i);
     var secret = text.match(/SECRET\s*[:：—–-]\s*(.+)/i);
     if (story) hol.tasks.push({ text: story[1].trim(), done: false, hidden: false, kind: 'story' });
     if (secret) hol.tasks.push({ text: secret[1].trim(), done: false, hidden: true, kind: 'secret' });
+  }
+
+  // Реролл одной задачи праздника
+  function rerollTaskPrompt(hol, idx, st, names, direction) {
+    var x = hol.tasks[idx];
+    var others = hol.tasks.filter(function (y, i) { return i !== idx && !y.hidden; }).map(function (y) { return '«' + y.text + '»'; }).join(', ');
+    var what;
+    if (x.kind === 'secret') {
+      var mood = moodOf(hol);
+      what = 'Придумай новую скрытую задачу-сюрприз. Настроение — ' + mood.name + ': ' + mood.rule + '. ' + SECRET_RULES;
+    } else if (x.kind === 'classic') {
+      what = 'Предложи другую классическую традицию этого праздника' + (placeLine(st) ? ' для места: ' + placeLine(st) : '') + ', которая подходит к направлению истории.';
+    } else {
+      what = 'Придумай другую открытую праздничную задачу, связанную с праздником и с персонажами, отношениями, происходящим в истории. Лёгкую, выполнимую за пару сцен.';
+    }
+    return [
+      '[OOC: Пауза в ролевой игре. Ты — помощник автора. Праздник: ' + hol.name + '.',
+      direction ? direction + '\n' : '',
+      x.kind === 'secret' ? 'Игроку нужна другая секретная задача.' : 'Игроку не подошла задача «' + x.text + '».',
+      what,
+      others ? 'Не повторяй остальные задачи: ' + others + '.' : '',
+      'Ответь ровно одной строкой:',
+      'TASK: текст задачи для ' + names.user + ']'
+    ].filter(Boolean).join('\n');
+  }
+
+  function applyTaskReroll(hol, idx, raw) {
+    var m = cleanLine(raw).match(/(?:TASK|SECRET|STORY)\s*[:：—–-]\s*(.+)/i);
+    var x = hol.tasks[idx];
+    if (!m || !x) return false;
+    x.text = m[1].trim().replace(/\]$/, '');
+    x.done = false;
+    return true;
   }
 
   function whenText(hol, today) {
@@ -684,7 +738,7 @@ const GENRE_HINTS = {
       lines.push('Праздничные традиции, которые игрок может выполнить (персонажи могут предлагать, но не навязывай):');
       open.forEach(function (o) { lines.push(o.n + '. ' + o.x.text + (o.x.done ? ' — уже сделано' : '')); });
       var sec = hol.tasks.map(function (x, i) { return { x: x, n: i + 1 }; }).filter(function (o) { return o.x.hidden && !o.x.done; });
-      if (sec.length) lines.push('Секретная задача (игрок о ней не знает; создавай для неё ненавязчивые поводы, не раскрывай прямо): ' + sec.map(function (o) { return o.n + '. ' + o.x.text; }).join('; '));
+      if (sec.length) lines.push('Секретная задача (' + moodOf(hol).name + '; игрок о ней не знает; создавай для неё ненавязчивые поводы, не раскрывай прямо; это ситуация, а не сценарий — не диктуй персонажам реплики и чувства): ' + sec.map(function (o) { return o.n + '. ' + o.x.text; }).join('; '));
       lines.push('Служебные метки: если в твоём ответе одна из задач по-настоящему выполнена — допиши в самом конце ответа <!--✓номер-->. Если в ответе наступил следующий день — допиши <!--день+1--> (или +N, если прошло несколько дней). Метки невидимы для игрока; не упоминай их в тексте.]');
       out.push(lines.join('\n'));
     }
@@ -834,11 +888,11 @@ const GENRE_HINTS = {
     if (found) {
       var h = newHoliday(found);
       var raw2 = '';
-      try { raw2 = await io.generate(activationPrompt(h, st, io.names), true); } catch (e) { raw2 = ''; }
+      try { raw2 = await io.generate(activationPrompt(h, st, io.names, io.direction || ''), true); } catch (e) { raw2 = ''; }
       applyActivation(h, raw2);
       st.holiday = h;
       var open = h.tasks.filter(function (x) { return !x.hidden; }).length;
-      io.toast(h.emoji + ' Праздничное событие: ' + h.name + '\nТрадиций: ' + open + (h.tasks.length > open ? ' + 🔒 секретная' : ''));
+      io.toast(h.emoji + ' Праздничное событие: ' + h.name + '\nТрадиций: ' + open + (h.tasks.length > open ? ' + 🔒 секретная (' + moodOf(h).icon + ')' : ''));
     }
   }
 
@@ -894,6 +948,7 @@ const defaults = {
     minStimuli: 2,
     events: true,
     leadDays: 3,
+    ffButton: true,
     showToasts: true,
     hideSpoilers: false,
     thinkPrompt: DEFAULT_THINK,
@@ -966,6 +1021,10 @@ function store() {
     if (!st.time) st.time = { date: '', country: '', countryName: '', city: '', flavor: '', flavorLocked: false, custom: [] };
     if (!Array.isArray(st.time.custom)) st.time.custom = [];
     if (!Array.isArray(st.time.timeline)) st.time.timeline = [];
+    if (typeof st.direction.lines !== 'string') st.direction.lines = '';
+    if (st.direction.wardrobe === undefined) st.direction.wardrobe = true;
+    if (!st.wardrobe || typeof st.wardrobe !== 'object') st.wardrobe = { active: null, history: [] };
+    if (!Array.isArray(st.wardrobe.history)) st.wardrobe.history = [];
     ensureHolidayState(st);
     return st;
 }
@@ -974,7 +1033,7 @@ function formatNotes(notes) {
     if (!notes.length) return '(пока пусто)';
     const len = ctx().chat?.length ?? 0;
     return notes
-        .map(n => `#${n.id}${n.tag ? ` [${n.tag}]` : ''} (записано ${Math.max(0, len - n.at)} сообщ. назад): ${n.text}`)
+        .map(n => `#${n.id}${n.tag ? ` [${n.tag}]` : ''} (записано ${Math.max(0, len - n.at)} сообщ. назад${n.ff ? ', ⏩ уже начата в чате' : ''}): ${n.text}`)
         .join('\n');
 }
 
@@ -994,7 +1053,8 @@ function buildGenreDirection(st) {
     if (custom) genres.push(custom);
     const insp = d.inspiration?.trim();
     const avoid = d.avoid?.trim();
-    if (!genres.length && !insp && !avoid) return '';
+    const declared = d.lines?.trim();
+    if (!genres.length && !insp && !avoid && !declared) return '';
     const lines = ['НАПРАВЛЕНИЕ ИСТОРИИ — главное правило для всех разделов блокнота (задумок, тайн, развития):'];
     const hint = g => GENRE_HINTS[g] ? `${g} (${GENRE_HINTS[g]})` : g;
     if (genres.length === 1) {
@@ -1010,6 +1070,7 @@ function buildGenreDirection(st) {
     }
     if (insp) lines.push(`— источник вдохновения: ${insp}. Бери оттуда ситуации, детали, характеры и настроение, но не копируй напрямую — переноси в этот мир и к этим персонажам.`);
     if (avoid) lines.push(`— НИКОГДА не предлагай: ${avoid}.`);
+    if (declared) lines.push(`— ЗАЯВЛЕННЫЕ ЛИНИИ — игрок хочет видеть их в истории: ${declared}. Держи их живыми: заводи для них арки, тайны, слухи и задумки и периодически возвращай этих персонажей в сюжет, даже если о них давно не было речи.`);
     lines.push('Не ломай логику уже идущей истории.');
     return lines.join('\n');
 }
@@ -1122,7 +1183,7 @@ DROP #T1 — линия больше не нужна
 ${st.intrigues.length ? 'Новую тайну заводи, если она по-настоящему обогатит историю.' : 'Сейчас у истории нет ни одной тайны — заведи хотя бы одну, подходящую к жанру и происходящему.'} Одновременно держи не больше ${max}.`;
 }
 
-function fillTemplate(template, notes, direction = '', intrigues = '', npcs = '', arcs = '', time = '') {
+function fillTemplate(template, notes, direction = '', intrigues = '', npcs = '', arcs = '', time = '', wardrobe = '') {
     const c = ctx();
     const MARK = '\u0001NNB_NOTES\u0001';
     const DMARK = '\u0001NNB_DIR\u0001';
@@ -1130,13 +1191,15 @@ function fillTemplate(template, notes, direction = '', intrigues = '', npcs = ''
     const NMARK = '\u0001NNB_NPC\u0001';
     const AMARK = '\u0001NNB_ARC\u0001';
     const TMARK = '\u0001NNB_TIME\u0001';
+    const WMARK = '\u0001NNB_WARD\u0001';
     const withMark = c.substituteParams(template
         .replaceAll('{{notes}}', MARK)
         .replaceAll('{{direction}}', DMARK)
         .replaceAll('{{intrigues}}', IMARK)
         .replaceAll('{{npcs}}', NMARK)
         .replaceAll('{{arcs}}', AMARK)
-        .replaceAll('{{time}}', TMARK));
+        .replaceAll('{{time}}', TMARK)
+        .replaceAll('{{wardrobe}}', WMARK));
     return withMark
         .replaceAll(MARK, formatNotes(notes))
         .replaceAll(DMARK, direction)
@@ -1144,6 +1207,7 @@ function fillTemplate(template, notes, direction = '', intrigues = '', npcs = ''
         .replaceAll(NMARK, c.substituteParams(npcs))
         .replaceAll(AMARK, c.substituteParams(arcs))
         .replaceAll(TMARK, c.substituteParams(time))
+        .replaceAll(WMARK, c.substituteParams(wardrobe))
         .replace(/\n{3,}/g, '\n\n');
 }
 
@@ -1155,12 +1219,16 @@ function updateInjection() {
     const showNpcs = st?.direction?.npcs && st.npcs.length;
     const showArcs = st?.direction?.arcs && (st.arcs.length || st.evolved.length);
     const timeBlock = st && st.direction.time ? [buildTimeInjection(st), s.events ? buildHolidayInjection(st) : ''].filter(Boolean).join('\n\n') : '';
-    if (!s.enabled || !st || (!st.notes.length && !showIntrigues && !showNpcs && !showArcs && !timeBlock)) {
+    const linesBlock = st?.direction?.lines?.trim() ? `[Линии, которые игрок хочет видеть в истории: ${st.direction.lines.trim()}. Время от времени давай им проявиться: эти персонажи появляются, их отношения развиваются, о них говорят. Естественно и не в каждой сцене.]` : '';
+    const wardBlock = st ? wardrobeInjection(st) : '';
+    if (!s.enabled || !st || (!st.notes.length && !showIntrigues && !showNpcs && !showArcs && !timeBlock && !linesBlock && !wardBlock)) {
         c.setExtensionPrompt(INJECT_KEY, '', POS_IN_CHAT, 0);
         return;
     }
     const blocks = [];
     if (timeBlock) blocks.push(timeBlock);
+    if (wardBlock) blocks.push(wardBlock);
+    if (linesBlock) blocks.push(linesBlock);
     if (showNpcs) blocks.push(NPC_INJECT_HEADER + '\n' + formatNpcs(st.npcs));
     if (showArcs) blocks.push(ARC_INJECT_HEADER + '\n' + formatArcs(st));
     if (st.notes.length) blocks.push(fillTemplate(s.injectPrompt, st.notes));
@@ -1177,6 +1245,7 @@ function updateInjection() {
 
 // Совместимость со старой и новой сигнатурой generateQuietPrompt
 let ownRequest = false;
+let ffPending = false;
 
 async function quietGenerateOnce(prompt) {
     const fn = ctx().generateQuietPrompt;
@@ -1196,11 +1265,14 @@ async function quietGenerateOnce(prompt) {
 // поэтому в наших запросах делаем его сообщением пользователя.
 const OWN_MARKER = '[OOC: Пауза в ролевой игре';
 function fixOwnPromptRole(data) {
-    if (!ownRequest || !data || data.dryRun || !Array.isArray(data.chat)) return;
+    if (!data || data.dryRun || !Array.isArray(data.chat)) return;
+    const marker = ownRequest ? OWN_MARKER : ffPending ? FF_MARKER : null;
+    if (!marker) return;
     const msgs = data.chat;
     for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i];
-        if (typeof m?.content !== 'string' || !m.content.includes(OWN_MARKER)) continue;
+        if (typeof m?.content !== 'string' || !m.content.includes(marker)) continue;
+        if (m.role !== 'system') return;
         const prev = msgs[i - 1];
         if (prev && prev.role === 'user' && typeof prev.content === 'string') {
             prev.content += '\n\n' + m.content;
@@ -1264,6 +1336,16 @@ function parseAndApply(raw) {
         if (!line) continue;
         if (applyTimeCommand(st, line, res)) continue;
         if (st.direction.time && applyEventCommand(st, line, res)) continue;
+
+        if (/^OUTFIT\s*_?\s*DONE\b/i.test(line)) {
+            res.outfitDone = true;
+            continue;
+        }
+        const mo = line.match(/^OUTFIT\s*[:：—–-]\s*(.+)$/i);
+        if (mo) {
+            res.outfit = mo[1].trim().replace(/\]$/, '');
+            continue;
+        }
 
         let m = line.match(/^ADD\s*(?:\[([^\]]{1,40})\])?\s*[:：—–-]\s*(.+)$/i);
         if (m) {
@@ -1445,6 +1527,8 @@ function report(res, manual, raw) {
     if (res.placeSet) parts.push(`📍 место: ${placeLine(store())}`);
     if (res.events) parts.push(`📜 в хронику: ${res.events.length}`);
     if (res.bdays) parts.push(`🎂 дни рождения: ${res.bdays.join(', ')}`);
+    if (res.outfit && store().direction.wardrobe) parts.push('👗 пора выбрать наряд');
+    if (res.outfitDone && store().direction.wardrobe) parts.push('🎭 образ отыгран');
     holidaySummary(res).forEach(x => parts.push(escapeHtml(x)));
     if (!parts.length) {
         if (/^NONE[.!]?$/i.test(clean.replace(/\*\*/g, ''))) {
@@ -1481,13 +1565,14 @@ async function think(manual = false) {
 
     const chatIdAtStart = ctx().chatId;
     busy = true;
+    let afterBusy = null;
     setStatus('Модель листает блокнот…');
     // убираем инъекцию на время размышления, чтобы блокнот не дублировался
     ctx().setExtensionPrompt(INJECT_KEY, '', POS_IN_CHAT, 0);
 
     try {
         const tpl = ensureSections(s.thinkPrompt);
-        const raw = await quietGenerate(fillTemplate(tpl, st.notes, buildDirection(st), buildIntrigueSection(st), buildNpcSection(st), buildArcSection(st), buildTimeSectionFull(st)));
+        const raw = await quietGenerate(fillTemplate(tpl, st.notes, buildDirection(st), buildIntrigueSection(st), buildNpcSection(st), buildArcSection(st), buildTimeSectionFull(st), buildWardrobeSection(st)));
         if (ctx().chatId !== chatIdAtStart) return; // чат сменили, пока модель думала
         st.lastRaw = String(raw ?? '');
         const res = parseAndApply(raw);
@@ -1495,6 +1580,16 @@ async function think(manual = false) {
         if (st.direction.time) {
             await fillFlavor(st, false);
             await holidayStep(st);
+        }
+        if (st.direction.wardrobe) {
+            const w = st.wardrobe;
+            if (res.outfitDone && w.active?.status === 'worn') {
+                setStatus('🎭 Модель подводит итог образа…');
+                if (await revealOutfit(st)) afterBusy = showRevealPopup;
+            } else if (res.outfit && !w.active) {
+                setStatus('👗 Модель подбирает образы…');
+                if (await generateOutfits(st, res.outfit)) afterBusy = showWardrobePopup;
+            }
         }
     } catch (err) {
         console.error('[npc_notebook]', err);
@@ -1507,6 +1602,7 @@ async function think(manual = false) {
         busy = false;
         updateInjection();
         renderPanel();
+        if (afterBusy && ctx().chatId === chatIdAtStart) afterBusy();
     }
 }
 
@@ -1531,7 +1627,7 @@ function buildTimeSectionFull(st) {
 
 // Если в своём промпте нет нужных разделов, вставляем их перед финальной инструкцией
 function ensureSections(tpl) {
-    const missing = ['direction', 'time', 'npcs', 'arcs', 'intrigues'].filter(k => !tpl.includes(`{{${k}}}`));
+    const missing = ['direction', 'time', 'npcs', 'arcs', 'intrigues', 'wardrobe'].filter(k => !tpl.includes(`{{${k}}}`));
     if (!missing.length) return tpl;
     const block = missing.map(k => `{{${k}}}`).join('\n\n') + '\n\n';
     let at = tpl.lastIndexOf('Ответь ТОЛЬКО');
@@ -1614,6 +1710,7 @@ async function holidayStep(st, opts) {
         generate: p => quietGenerate(p),
         toast: x => toastr.info(escapeHtml(x).replace(/\n/g, '<br>'), 'Блокнот рассказчика', { escapeHtml: false, timeOut: 9000 }),
         names: storyNames(),
+        direction: buildDirection(st),
         lead: Math.max(1, Number(s.leadDays) || 3),
         events: !!s.events,
         showToasts: !!s.showToasts,
@@ -1657,6 +1754,388 @@ async function runFlavor() {
     }
 }
 
+// Общая обёртка для ручных действий с запросом к модели
+async function withBusy(status, fn) {
+    if (busy) {
+        toastr.info('Модель уже занята — подожди пару секунд', 'Блокнот рассказчика');
+        return undefined;
+    }
+    const st = store();
+    if (!st) {
+        toastr.warning('Сначала открой чат', 'Блокнот рассказчика');
+        return undefined;
+    }
+    const chatId = ctx().chatId;
+    busy = true;
+    setStatus(status);
+    ctx().setExtensionPrompt(INJECT_KEY, '', POS_IN_CHAT, 0);
+    try {
+        return await fn(st);
+    } catch (err) {
+        console.error('[npc_notebook]', err);
+        toastr.error(String(err?.message || err), 'Блокнот рассказчика: ошибка');
+        return undefined;
+    } finally {
+        if (ctx().chatId === chatId) await ctx().saveMetadata();
+        busy = false;
+        updateInjection();
+        renderPanel();
+    }
+}
+
+function cleanAnswer(raw) {
+    return normalizeSpaces(raw).replace(/<(think|thinking|reasoning)>[\s\S]*?<\/\1>/gi, '').replace(/\*\*/g, '');
+}
+
+function answerLines(raw) {
+    return cleanAnswer(raw).split('\n').map(l => l.trim().replace(/^[-*•>\s]+/, '').replace(/^`+|`+$/g, '').trim()).filter(Boolean);
+}
+
+// ---------- Перемотка ⏩ ----------
+
+function fastForwardPrompt(st) {
+    const parts = ['[OOC: Пауза в ролевой игре. Сейчас ты НЕ пишешь ответ персонажа. Ты — автор этой истории. Игрок нажал «перемотку»: текущая сцена исчерпала себя, пора перейти к следующему событию. Перечитай чат и выбери самое органичное продолжение — то, что естественно вытекает из происходящего и давно просится в историю.'];
+    const dir = buildDirection(st);
+    if (dir) parts.push(dir);
+    parts.push('Задумки в блокноте:\n' + formatNotes(st.notes));
+    if (st.direction.intrigues && st.intrigues.length) parts.push('Тайны (можно дать новую улику или повод):\n' + formatIntrigues(st.intrigues));
+    if (st.direction.time && st.time.date) {
+        const up = upcoming(st, 30).map(h => `${h.name} — ${h.ongoing ? 'идёт сейчас' : h.inDays === 0 ? 'сегодня' : `через ${daysWord(h.inDays)}`}`);
+        parts.push(`Сейчас в истории: ${weekday(st.time.date)}, ${formatDate(st.time.date)}.` + (up.length ? `\nБлижайшие праздники и даты: ${up.join('; ')}.` : ''));
+    }
+    parts.push(`Ответь ровно тремя строками, без пояснений:
+NEXT: номер задумки (#3), номер тайны (T2), HOLIDAY — праздник или день рождения из календаря, или NEW — своё событие
+SKIP: сколько дней пройдёт до следующей сцены (0 — в тот же день, просто позже)
+SCENE: с чего начнётся следующая сцена — обстановка и событие в 1–2 предложениях, без реплик и чувств персонажей]`);
+    return parts.join('\n\n');
+}
+
+function parseFastForward(raw) {
+    const out = { next: '', skip: 0, scene: '' };
+    for (const line of answerLines(raw)) {
+        let m = line.match(/^NEXT\s*[:：—–-]\s*(.+)$/i);
+        if (m) { out.next = m[1].trim(); continue; }
+        m = line.match(/^SKIP\s*[:：—–-]\s*(\d+)/i);
+        if (m) { out.skip = Math.min(60, Number(m[1]) || 0); continue; }
+        m = line.match(/^SCENE\s*[:：—–-]\s*(.+)$/i);
+        if (m) out.scene = m[1].trim().replace(/\]$/, '');
+    }
+    return out;
+}
+
+async function fastForward() {
+    const s = settings();
+    if (!s.enabled) return toastr.info('Блокнот выключен', 'Блокнот рассказчика');
+    if (!ctx().chat?.length) return toastr.warning('Чат пуст — перематывать пока нечего', 'Блокнот рассказчика');
+    let text = null;
+    let summary = '';
+    const ok = await withBusy('⏩ Модель выбирает следующее событие…', async st => {
+        const raw = await quietGenerate(fastForwardPrompt(st));
+        st.lastRaw = String(raw ?? '');
+        const ff = parseFastForward(raw);
+        const len = ctx().chat.length;
+        const noteId = ff.next.match(/^#?\s*(\d+)/);
+        const note = noteId && st.notes.find(n => n.id === Number(noteId[1]));
+        if (note) { note.ff = true; note.ffAt = len; }
+        let moved = 0;
+        if (ff.skip > 0 && st.direction.time && st.time.date) {
+            st.time.date = addDays(st.time.date, ff.skip);
+            moved = ff.skip;
+            if (s.events) await holidayStep(st);
+        }
+        const scene = ff.scene || 'самое органичное следующее событие: задумка из твоего блокнота, тайна, заявленная линия или приближающаяся дата';
+        const when = moved ? ` Между сценами прошло ${daysWord(moved)} — сейчас ${weekday(st.time.date)}, ${formatDate(st.time.date)}.` : (ff.skip > 0 ? ` Между сценами прошло ${daysWord(ff.skip)}.` : '');
+        text = `${FF_MARKER} игрок просит перейти к следующему событию. Сверни текущую сцену одной-двумя фразами, без пересказа, и сразу начни новую: ${scene}${when} Пиши как обычный ответ, не упоминай перемотку.]`;
+        summary = moved ? `📅 прошло ${daysWord(moved)} → ${formatDate(st.time.date)}` : '';
+        if (!s.hideSpoilers && ff.scene) summary = [ff.scene, summary].filter(Boolean).join('<br>');
+        return true;
+    });
+    if (!ok || !text) return;
+    ctx().setExtensionPrompt(INJECT_FF_KEY, text, POS_IN_CHAT, 0, false, 0);
+    ffPending = true;
+    toastr.info(summary ? escapeHtml(summary).replace(/&lt;br&gt;/g, '<br>') : 'Переходим к следующему событию', '⏩ Дальше', { escapeHtml: false, timeOut: 6000 });
+    const send = $('#send_but');
+    if (send.length) send.trigger('click');
+    else if (typeof ctx().generate === 'function') ctx().generate('normal');
+}
+
+// ---------- Праздничные задачи: реролл и правка ----------
+
+async function rerollHolidayTask(idx) {
+    await withBusy('Модель придумывает другую задачу…', async st => {
+        const hol = st.holiday;
+        if (!hol || hol.finished || !hol.tasks[idx]) return;
+        const raw = await quietGenerate(rerollTaskPrompt(hol, idx, st, storyNames(), buildDirection(st)));
+        st.lastRaw = String(raw ?? '');
+        if (!applyTaskReroll(hol, idx, raw)) {
+            toastr.warning('Модель ответила не по формату — загляни в «Последний ответ модели»', 'Блокнот рассказчика');
+            return;
+        }
+        const x = hol.tasks[idx];
+        if (x.hidden) toastr.success('🔒 Секретная задача заменена', 'Блокнот рассказчика');
+        else toastr.success(settings().hideSpoilers ? 'Задача заменена' : escapeHtml(x.text), '🎲 Новая задача', { escapeHtml: false });
+    });
+}
+
+// ---------- Гардероб 👗 ----------
+
+function buildWardrobeSection(st) {
+    if (!st?.direction?.wardrobe) return '';
+    const w = st.wardrobe;
+    if (w.active?.status === 'choosing') return '';
+    if (w.active?.status === 'worn') {
+        const look = w.active.look;
+        return `Гардероб. Наряд {{user}}: «${look.title}»${w.active.occasion ? ` (для: ${w.active.occasion})` : ''}.
+OUTFITDONE — если сцена, ради которой выбирался наряд, уже прошла или {{user}} уже переоделся(-ась).`;
+    }
+    const recent = w.history.slice(-3).map(h => h.occasion).filter(Boolean).join('; ');
+    return `Гардероб. Если в ближайшей сцене или скоро по сюжету важен наряд {{user}} (свидание, вечеринка, праздник, ужин с родными, важная встреча) и образ для неё ещё не выбирали — OUTFIT: повод (коротко, например «ужин у родителей на День благодарения»). Только когда наряд действительно имеет значение.${recent ? ` Недавно уже выбирали образы для: ${recent}.` : ''}`;
+}
+
+function wardrobeInjection(st) {
+    const a = st?.direction?.wardrobe && st.wardrobe.active;
+    if (!a || a.status !== 'worn') return '';
+    const user = storyNames().user;
+    const look = a.look;
+    const effects = look.effects
+        ? `Скрытые последствия этого выбора (игрок их не знает): ${look.effects}. Покажи их в сцене через взгляды, поведение и реплики персонажей, когда они увидят наряд — естественно, без цифр и объявлений, и не намекай, что реакции были известны заранее.`
+        : 'Персонажи реагируют на него в своём характере — кому-то понравится, кому-то нет.';
+    return `[Наряд ${user}${a.occasion ? ` (${a.occasion})` : ''}: «${look.title}» — ${String(look.desc || '').replace(/[.\s]+$/, '')}. ${effects}]`;
+}
+
+function wardrobePrompt(st, occasion, exclude = []) {
+    const names = storyNames();
+    const t = st.time;
+    const when = [t.date ? `${formatDate(t.date)}, ${season(t.date).name}` : '', placeLine(st)].filter(Boolean).join('; ');
+    const recent = st.wardrobe.history.slice(-3).map(h => `«${h.title}»`);
+    const avoid = [...exclude.map(x => `«${x}»`), ...recent];
+    return [
+        '[OOC: Пауза в ролевой игре. Сейчас ты НЕ пишешь ответ персонажа. Ты — помощник автора и подбираешь наряд, как в визуальной новелле.',
+        `${names.user} собирается: ${occasion || 'в ближайшую сцену, где важен наряд (пойми по чату, куда именно)'}.`,
+        when ? `Когда и где: ${when}.` : '',
+        buildDirection(st),
+        avoid.length ? `Не повторяй эти образы: ${avoid.join(', ')}.` : '',
+        `Предложи 4 разных образа для ${names.user}: от спокойного до смелого. Учитывай внешность и стиль ${names.user}, погоду, повод и то, кто там будет.`,
+        'К каждому образу придумай скрытые последствия — как на него отреагируют конкретные персонажи. Игрок их не увидит, пока сцена не пройдёт. Последствия у всех образов разные: не бывает образа, который нравится всем, и образа, который не нравится никому. Реакции — в характере персонажей и в духе жанра.',
+        'Формат — по две строки на образ, без пояснений:',
+        'LOOK: название образа | что надето, причёска, детали — 1–2 предложения',
+        'EFFECT: Имя (+): как отреагирует; Имя (−): как отреагирует]',
+    ].filter(Boolean).join('\n');
+}
+
+function parseLooks(raw) {
+    const looks = [];
+    for (const line of answerLines(raw)) {
+        let m = line.match(/^LOOK\s*\d*\s*[:：—–-]\s*(.+)$/i);
+        if (m) {
+            const [title, ...rest] = m[1].split('|');
+            looks.push({ title: title.trim().replace(/^[«"]|[»"]$/g, ''), desc: rest.join('|').trim(), effects: '' });
+            continue;
+        }
+        m = line.match(/^EFFECTS?\s*[:：—–-]\s*(.+)$/i);
+        if (m && looks.length) looks[looks.length - 1].effects = m[1].trim().replace(/\]$/, '');
+    }
+    return looks.filter(l => l.title);
+}
+
+async function generateOutfits(st, occasion, exclude = []) {
+    const raw = await quietGenerate(wardrobePrompt(st, occasion, exclude));
+    st.lastRaw = String(raw ?? '');
+    const looks = parseLooks(raw);
+    if (looks.length < 2) {
+        toastr.warning('Модель не предложила образы по формату — загляни в «Последний ответ модели»', 'Блокнот рассказчика');
+        return false;
+    }
+    st.wardrobe.active = { occasion: occasion || '', options: looks.slice(0, 5), status: 'choosing', at: ctx().chat.length, date: st.time.date || '' };
+    return true;
+}
+
+async function startWardrobe() {
+    const st = store();
+    if (!st) return toastr.warning('Сначала открой чат', 'Блокнот рассказчика');
+    if (st.wardrobe.active?.status === 'choosing') return showWardrobePopup();
+    if (st.wardrobe.active?.status === 'worn' && !confirm(`Сейчас выбран образ «${st.wardrobe.active.look.title}». Подобрать новый? Последствия старого так и останутся нераскрытыми.`)) return;
+    const occasion = await askText('Куда собирается твой персонаж? Оставь пустым — модель поймёт по сцене.');
+    if (occasion === null) return;
+    st.wardrobe.active = null;
+    const ok = await withBusy('👗 Модель подбирает образы…', s2 => generateOutfits(s2, occasion.trim()));
+    if (ok) showWardrobePopup();
+}
+
+async function rerollOutfits() {
+    const st = store();
+    const a = st?.wardrobe.active;
+    if (!a) return;
+    const exclude = a.options.map(o => o.title);
+    const occasion = a.occasion;
+    const ok = await withBusy('👗 Модель подбирает другие образы…', s2 => generateOutfits(s2, occasion, exclude));
+    if (ok) showWardrobePopup();
+}
+
+async function chooseOutfit(i, customText) {
+    const st = store();
+    const a = st?.wardrobe.active;
+    if (!a) return;
+    a.look = customText ? { title: 'Свой образ', desc: customText, effects: '', custom: true } : a.options[i];
+    a.status = 'worn';
+    await commit();
+    toastr.success(`Выбран образ «${escapeHtml(a.look.title)}». Последствия узнаешь по ходу сцены.`, '👗 Гардероб', { escapeHtml: false });
+}
+
+function revealPrompt(st) {
+    const a = st.wardrobe.active;
+    const names = storyNames();
+    const arcs = st.direction.arcs && st.arcs.length ? `\nТекущие арки:\n${formatArcs(st, true)}` : '';
+    return [
+        '[OOC: Пауза в ролевой игре. Сейчас ты НЕ пишешь ответ персонажа. Ты — помощник автора.',
+        `${names.user} выбрал(а) наряд «${a.look.title}» — ${a.look.desc}${a.occasion ? ` (для: ${a.occasion})` : ''}.`,
+        a.look.effects ? `Задуманные последствия: ${a.look.effects}.` : '',
+        'Перечитай чат: как этот выбор на самом деле сыграл в сцене?' + arcs,
+        'Ответь строками, без пояснений:',
+        'RESULT: итог в 1–2 предложениях, с юмором и теплом — кто как отреагировал и чем этот образ запомнится',
+        st.direction.arcs && st.arcs.length ? 'STIMULUS #A1: что изменилось — только если наряд действительно подтолкнул чью-то арку (иначе не пиши)' : '',
+        st.direction.npcs && st.npcs.length ? 'NPCSTATE [Имя]: как изменилось отношение NPC — только если заметно изменилось (иначе не пиши)' : '',
+        ']',
+    ].filter(Boolean).join('\n');
+}
+
+async function revealOutfit(st) {
+    const a = st.wardrobe.active;
+    if (!a || a.status !== 'worn') return false;
+    const raw = await quietGenerate(revealPrompt(st));
+    let result = '';
+    for (const line of answerLines(raw)) {
+        const m = line.match(/^RESULT\s*[:：—–-]\s*(.+)$/i);
+        if (m) { result = m[1].trim().replace(/\]$/, ''); break; }
+    }
+    const res = parseAndApply(raw.split('\n').filter(l => /STIMULUS|NPCSTATE/i.test(l)).join('\n'));
+    const entry = {
+        occasion: a.occasion, title: a.look.title, desc: a.look.desc, effects: a.look.effects,
+        result: result || 'Сцена прошла — каждый запомнил этот образ по-своему.',
+        others: (a.options || []).filter(o => o !== a.look).map(o => ({ title: o.title, effects: o.effects })),
+        date: st.time.date || '', stimuli: res.stimuli || 0,
+    };
+    st.wardrobe.history.push(entry);
+    if (st.wardrobe.history.length > 20) st.wardrobe.history.shift();
+    st.wardrobe.active = null;
+    if (st.direction.time && st.time.date) addEvent(st, st.time.date, `Образ «${entry.title}»${entry.occasion ? ` (${entry.occasion})` : ''}: ${entry.result}`);
+    st.wardrobe.lastReveal = entry;
+    return true;
+}
+
+async function runReveal() {
+    const ok = await withBusy('🎭 Модель подводит итог образа…', st => revealOutfit(st));
+    if (ok) showRevealPopup();
+}
+
+function closePopupOf(el) {
+    let dlg = $(el).closest('dialog');
+    if (!dlg.length) dlg = $(el).closest('.popup');
+    const btn = dlg.find('.popup-button-ok').add(dlg.find('.popup-button-cancel')).first();
+    if (btn.length) btn.trigger('click');
+    else dlg[0]?.close?.();
+}
+
+async function openPopup(el) {
+    const c = ctx();
+    if (typeof c.callGenericPopup === 'function' && c.POPUP_TYPE) {
+        await c.callGenericPopup(el[0], c.POPUP_TYPE.TEXT, '', { okButton: 'Закрыть', allowVerticalScrolling: true, wide: false });
+        return true;
+    }
+    return false;
+}
+
+async function showWardrobePopup() {
+    const st = store();
+    const a = st?.wardrobe.active;
+    if (!a || a.status !== 'choosing') return;
+    const el = $('<div class="nnb-pop"><h3>👗 Что надеть?</h3></div>');
+    if (a.occasion) el.append($('<div class="nnb-pop-sub"></div>').text(a.occasion));
+    a.options.forEach((o, i) => {
+        const card = $('<div class="nnb-look" tabindex="0"><div class="nnb-look-title"></div><div class="nnb-look-desc"></div></div>');
+        card.find('.nnb-look-title').text(o.title);
+        card.find('.nnb-look-desc').text(o.desc);
+        card.on('click', async () => { closePopupOf(el); await chooseOutfit(i); });
+        el.append(card);
+    });
+    const row = $('<div class="nnb-pop-row"></div>');
+    const own = $('<div class="menu_button"><i class="fa-solid fa-pen"></i> Свой вариант</div>');
+    own.on('click', async () => {
+        closePopupOf(el);
+        const t = await askText('Опиши, что надето');
+        if (t && t.trim()) await chooseOutfit(-1, t.trim());
+    });
+    const reroll = $('<div class="menu_button"><i class="fa-solid fa-dice"></i> Другие образы</div>');
+    reroll.on('click', () => { closePopupOf(el); rerollOutfits(); });
+    row.append(own, reroll);
+    el.append(row);
+    if (!(await openPopup(el))) toastr.info('Образы готовы — выбери в панели Блокнота', '👗 Гардероб');
+}
+
+function revealCard(entry) {
+    const el = $('<div class="nnb-pop"><h3>🎭 Чем обернулся образ</h3></div>');
+    el.append($('<div class="nnb-look-title"></div>').text(`«${entry.title}»${entry.occasion ? ` — ${entry.occasion}` : ''}`));
+    el.append($('<div class="nnb-pop-result"></div>').text(entry.result));
+    if (entry.effects) el.append($('<div class="nnb-pop-sub"></div>').text('Задумано было: ' + entry.effects));
+    if (entry.others?.length) {
+        const det = $('<details><summary>А что было бы, если…</summary></details>');
+        entry.others.forEach(o => det.append($('<div class="nnb-pop-other"></div>').text(`«${o.title}»: ${o.effects || 'реакции не записаны'}`)));
+        el.append(det);
+    }
+    return el;
+}
+
+async function showRevealPopup() {
+    const st = store();
+    const entry = st?.wardrobe.lastReveal;
+    if (!entry) return;
+    delete st.wardrobe.lastReveal;
+    ctx().saveMetadata();
+    if (!(await openPopup(revealCard(entry)))) toastr.success(escapeHtml(entry.result), '🎭 ' + escapeHtml(entry.title), { escapeHtml: false, timeOut: 12000 });
+}
+
+function renderWardrobe(st) {
+    const root = $('#nnb_wardrobe_box').empty();
+    if (!st.direction.wardrobe) return;
+    const w = st.wardrobe;
+    const det = $('<details open class="nnb-section"><summary>👗 Гардероб</summary></details>');
+    root.append(det);
+    const a = w.active;
+    if (a?.status === 'choosing') {
+        const box = $('<div class="nnb-note nnb-event"><div class="nnb-event-title">Образы ждут выбора</div><div class="nnb-meta"></div></div>');
+        box.find('.nnb-meta').text(a.occasion || 'для ближайшей сцены');
+        const open = $('<div class="menu_button"><i class="fa-solid fa-shirt"></i> Выбрать образ</div>').on('click', showWardrobePopup);
+        const cancel = $('<div class="menu_button"><i class="fa-solid fa-xmark"></i> Не нужно</div>').on('click', async () => { w.active = null; await commit(); });
+        box.append(open, cancel);
+        det.append(box);
+    } else if (a?.status === 'worn') {
+        const box = $('<div class="nnb-note nnb-event"><div class="nnb-event-title"></div><div class="nnb-npc-text nnb-text"></div><div class="nnb-meta">Последствия раскроются, когда сцена пройдёт: модель отметит это при размышлении, или нажми кнопку.</div></div>');
+        box.find('.nnb-event-title').text(`Сейчас: «${a.look.title}»${a.occasion ? ` — ${a.occasion}` : ''}`);
+        box.find('.nnb-npc-text').text(a.look.desc);
+        const rev = $('<div class="menu_button"><i class="fa-solid fa-masks-theater"></i> Сцена прошла — чем это обернулось?</div>').on('click', runReveal);
+        box.append(rev);
+        det.append(box);
+    } else {
+        det.append('<div class="nnb-empty">Модель сама предложит выбрать наряд, когда он будет важен для сцены. Или подбери сейчас.</div>');
+    }
+    if (!a || a.status === 'worn') {
+        det.append($('<div class="menu_button"><i class="fa-solid fa-shirt"></i> Подобрать образ</div>').on('click', startWardrobe));
+    }
+    if (w.history.length) {
+        const hist = $('<details><summary></summary></details>');
+        hist.find('summary').text(`История образов (${w.history.length})`);
+        [...w.history].reverse().forEach(h => {
+            const row = $('<div class="nnb-note"><div class="nnb-meta"></div><div class="nnb-npc-text"></div><div class="nnb-npc-status"></div></div>');
+            row.find('.nnb-meta').text([h.date ? formatDate(h.date) : '', h.occasion].filter(Boolean).join(' · '));
+            row.find('.nnb-npc-text').text(`«${h.title}»`);
+            row.find('.nnb-npc-status').text(h.result);
+            row.css('cursor', 'pointer').on('click', () => openPopup(revealCard(h)));
+            hist.append(row);
+        });
+        det.append(hist);
+    }
+}
+
 // Метки в ответе модели: <!--✓2--> (задача праздника выполнена), <!--день+1--> (наступил следующий день)
 async function processReplyTags() {
     const st = store();
@@ -1681,7 +2160,14 @@ async function processReplyTags() {
     return true;
 }
 
+function clearFastForward() {
+    if (!ffPending) return;
+    ffPending = false;
+    ctx().setExtensionPrompt(INJECT_FF_KEY, '', POS_IN_CHAT, 0);
+}
+
 async function onMessageReceived() {
+    clearFastForward();
     try { await processReplyTags(); } catch (e) { console.error('[npc_notebook] reply tags', e); }
     onMessageReceivedThink();
 }
@@ -1712,6 +2198,7 @@ const PANEL_HTML = `
       <label class="checkbox_label"><input type="checkbox" id="nnb_enabled"> Включено</label>
       <label class="checkbox_label"><input type="checkbox" id="nnb_toasts"> Уведомлять о новых записях</label>
       <label class="checkbox_label"><input type="checkbox" id="nnb_spoilers"> Не подглядывать (размыть текст записей)</label>
+      <label class="checkbox_label"><input type="checkbox" id="nnb_ff_on"> Кнопка ⏩ «Дальше» у поля ввода</label>
 
       <div class="nnb-row"><label for="nnb_interval">Думать каждые N сообщений</label><input type="number" min="2" max="200" class="text_pole" id="nnb_interval"></div>
       <div class="nnb-row"><label for="nnb_depth">Глубина вставки блокнота</label><input type="number" min="0" max="50" class="text_pole" id="nnb_depth"></div>
@@ -1741,19 +2228,23 @@ const PANEL_HTML = `
         </div>
         <textarea class="text_pole nnb-insp" id="nnb_inspiration" rows="2" placeholder="Источник вдохновения: тайтл, тема, настроение…"></textarea>
         <textarea class="text_pole nnb-insp" id="nnb_avoid" rows="2" placeholder="Чего избегать: например, документы, бюрократия, службы отлова, угрозы извне"></textarea>
+        <textarea class="text_pole nnb-insp" id="nnb_lines" rows="2" placeholder="Заявленные линии — что обязательно должно быть в истории: например, любовный треугольник Вика, Годжо и Гето"></textarea>
         <label class="checkbox_label"><input type="checkbox" id="nnb_intrigues_on"> Тайны и интриги в этом чате</label>
         <label class="checkbox_label"><input type="checkbox" id="nnb_npcs_on"> Карточки NPC в этом чате</label>
         <label class="checkbox_label"><input type="checkbox" id="nnb_arcs_on"> Развитие персонажей в этом чате</label>
         <label class="checkbox_label"><input type="checkbox" id="nnb_time_on"> Время и место в этом чате</label>
+        <label class="checkbox_label"><input type="checkbox" id="nnb_wardrobe_on"> Гардероб в этом чате</label>
       </div>
 
       <div class="nnb-status" id="nnb_status"></div>
       <div class="nnb-buttons">
         <div class="menu_button" id="nnb_think_now"><i class="fa-solid fa-feather"></i> Подумать сейчас</div>
+        <div class="menu_button" id="nnb_ff_panel"><i class="fa-solid fa-forward"></i> Дальше</div>
         <div class="menu_button" id="nnb_add"><i class="fa-solid fa-plus"></i> Добавить запись</div>
         <div class="menu_button" id="nnb_clear"><i class="fa-solid fa-broom"></i> Очистить блокнот</div>
       </div>
 
+      <div id="nnb_wardrobe_box"></div>
       <div id="nnb_time_box"></div>
       <div id="nnb_list"></div>
       <div id="nnb_intrigue_list"></div>
@@ -1825,7 +2316,7 @@ function renderPanel() {
               <i class="fa-solid fa-trash" title="Удалить"></i>
             </div>
           </div>`);
-        row.find('.nnb-meta').text(`#${n.id}${n.tag ? ` · ${n.tag}` : ''} · ${Math.max(0, len - n.at)} сообщ. назад`);
+        row.find('.nnb-meta').text(`#${n.id}${n.tag ? ` · ${n.tag}` : ''} · ${Math.max(0, len - n.at)} сообщ. назад${n.ff ? ' · ⏩ в работе' : ''}`);
         row.find('.nnb-text').text(n.text);
         row.find('.fa-dice').on('click', () => rerollNote(n.id));
         row.find('.fa-check').on('click', () => closeNote(n.id, 'done'));
@@ -1840,6 +2331,7 @@ function renderPanel() {
         list.append(row);
     }
 
+    renderWardrobe(st);
     renderTime(st);
     renderIntrigues(st, len);
     renderNpcs(st);
@@ -1907,6 +2399,8 @@ function renderDirection() {
     $('#nnb_time_on').prop('checked', !!st?.direction.time).prop('disabled', !enabled);
     $('#nnb_inspiration').val(st?.direction.inspiration ?? '').prop('disabled', !enabled);
     $('#nnb_avoid').val(st?.direction.avoid ?? '').prop('disabled', !enabled);
+    $('#nnb_lines').val(st?.direction.lines ?? '').prop('disabled', !enabled);
+    $('#nnb_wardrobe_on').prop('checked', !!st?.direction.wardrobe).prop('disabled', !enabled);
 }
 
 function renderIntrigues(st, len) {
@@ -2237,10 +2731,17 @@ function renderHolidayCard(st, det) {
     const box = $('<div class="nnb-note nnb-event"><div class="nnb-event-title"></div><div class="nnb-meta"></div><div class="nnb-tasks"></div></div>');
     box.find('.nnb-event-title').text(`${hol.emoji} ${hol.name} — ${whenText(hol, st.time.date)}`);
     box.find('.nnb-meta').text(`Традиции: ${t.done} из ${t.total}${hol.tasks.some(x => x.hidden) ? ' · есть секретная задача' : ''}`);
-    hol.tasks.forEach(x => {
-        const row = $('<label class="checkbox_label nnb-task"><input type="checkbox"><span></span></label>');
+    hol.tasks.forEach((x, i) => {
+        const row = $('<div class="nnb-task-row"><label class="checkbox_label nnb-task"><input type="checkbox"><span></span></label><div class="nnb-actions"><i class="fa-solid fa-dice" title="Другая задача"></i><i class="fa-solid fa-pen" title="Изменить"></i></div></div>');
         row.find('span').text(x.hidden && !x.done ? '🔒 Секретная задача' : `${x.hidden ? '🔓 ' : ''}${x.text}`);
         row.find('input').prop('checked', !!x.done).on('change', async function () { x.done = $(this).prop('checked'); await commit(); });
+        if (x.done) row.find('.nnb-actions').remove();
+        if (x.hidden) row.find('.fa-pen').remove();
+        row.find('.fa-dice').on('click', () => rerollHolidayTask(i));
+        row.find('.fa-pen').on('click', async () => {
+            const t = await askText('Изменить задачу', x.text);
+            if (t && t.trim()) { x.text = t.trim(); await commit(); }
+        });
         box.find('.nnb-tasks').append(row);
     });
     const fin = $('<div class="menu_button"><i class="fa-solid fa-flag-checkered"></i> Завершить праздник и получить медаль</div>');
@@ -2340,6 +2841,31 @@ function bind(id, key, kind = 'text') {
     }
 }
 
+// ⏩ у поля ввода и пункты в меню «волшебной палочки»
+function placeFfButton() {
+    const on = !!settings().ffButton;
+    let btn = $('#nnb_ff_btn');
+    if (on && !btn.length && $('#send_but').length) {
+        btn = $('<div id="nnb_ff_btn" class="fa-solid fa-forward interactable" title="Дальше: перейти к следующему событию" tabindex="0"></div>');
+        btn.on('click', fastForward);
+        $('#send_but').before(btn);
+    }
+    btn.toggle(on);
+}
+
+function addMenuItems() {
+    const menu = $('#extensionsMenu');
+    if (!menu.length || $('#nnb_menu_ff').length) return;
+    const item = (id, icon, text, fn) => $(`<div id="${id}" class="list-group-item flex-container flexGap5 interactable" tabindex="0"><div class="fa-solid ${icon} extensionsMenuExtensionButton"></div><span></span></div>`)
+        .find('span').text(text).end().on('click', fn);
+    menu.append(item('nnb_menu_ff', 'fa-forward', 'Дальше: следующее событие', fastForward));
+    menu.append(item('nnb_menu_wardrobe', 'fa-shirt', 'Гардероб: подобрать образ', () => {
+        const st = store();
+        if (st && !st.direction.wardrobe) return toastr.info('Гардероб выключен в этом чате — включи его в панели Блокнота', 'Блокнот рассказчика');
+        startWardrobe();
+    }));
+}
+
 jQuery(async () => {
     const c = ctx();
     $('#extensions_settings2').append(PANEL_HTML);
@@ -2347,6 +2873,8 @@ jQuery(async () => {
     bind('nnb_enabled', 'enabled', 'checkbox');
     bind('nnb_toasts', 'showToasts', 'checkbox');
     bind('nnb_spoilers', 'hideSpoilers', 'checkbox');
+    bind('nnb_ff_on', 'ffButton', 'checkbox');
+    $('#nnb_ff_on').on('change', placeFfButton);
     bind('nnb_interval', 'interval', 'number');
     bind('nnb_depth', 'depth', 'number');
     bind('nnb_max', 'maxActive', 'number');
@@ -2408,6 +2936,21 @@ jQuery(async () => {
         st.direction.avoid = $(this).val();
         saveDirectionSoon();
     });
+    $('#nnb_lines').on('input', function () {
+        const st = store();
+        if (!st) return;
+        st.direction.lines = $(this).val();
+        saveDirectionSoon();
+        updateInjection();
+    });
+    $('#nnb_wardrobe_on').on('change', function () {
+        const st = store();
+        if (!st) return;
+        st.direction.wardrobe = $(this).prop('checked');
+        saveDirectionSoon();
+        updateInjection();
+        renderPanel();
+    });
     $('#nnb_inspiration').on('input', function () {
         const st = store();
         if (!st) return;
@@ -2416,6 +2959,9 @@ jQuery(async () => {
     });
 
     $('#nnb_think_now').on('click', () => think(true));
+    $('#nnb_ff_panel').on('click', fastForward);
+    addMenuItems();
+    placeFfButton();
     $('#nnb_add').on('click', async () => {
         const st = store();
         if (!st) return toastr.warning('Сначала открой чат', 'Блокнот рассказчика');
@@ -2453,6 +2999,8 @@ jQuery(async () => {
         if (e) c.eventSource.on(e, () => { updateInjection(); renderPanel(); });
     }
     c.eventSource.on(ev.CHAT_CHANGED, renderDirection);
+    c.eventSource.on(ev.CHAT_CHANGED, clearFastForward);
+    if (ev.GENERATION_STOPPED) c.eventSource.on(ev.GENERATION_STOPPED, clearFastForward);
     if (ev.CHAT_COMPLETION_PROMPT_READY) c.eventSource.on(ev.CHAT_COMPLETION_PROMPT_READY, fixOwnPromptRole);
 
     updateInjection();
