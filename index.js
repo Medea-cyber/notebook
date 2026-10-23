@@ -4,6 +4,7 @@
 
 const MODULE = 'npc_notebook';
 const INJECT_KEY = 'npc_notebook_inject';
+const ACTION_INJECT_KEY = 'npc_notebook_actions';
 
 // Константы SillyTavern (extension_prompt_types / extension_prompt_roles)
 const POS_IN_CHAT = 1;
@@ -308,7 +309,7 @@ const GENRE_HINTS = {
   function holidaysFor(st) {
       const code = st.time.country;
       const base = HOLIDAYS[code] || HOLIDAYS.ALL;
-      const custom = (st.time.custom || []).map(c => ({ name: c.name, md: c.md, note: c.note, custom: true }));
+      const custom = (st.time.custom || []).map(c => ({ name: c.name, md: c.md, note: c.note, custom: true, bday: c.bday, who: c.who }));
       return base.concat(custom);
   }
 
@@ -350,9 +351,9 @@ const GENRE_HINTS = {
   function parseDateText(text, refIso) {
       const t = String(text || '').trim().toLowerCase();
       let y, m, d;
-      let mm = t.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+      let mm = t.match(/(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})/);
       if (mm) [y, m, d] = [Number(mm[1]), Number(mm[2]), Number(mm[3])];
-      if (!mm && (mm = t.match(/(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?/))) {
+      if (!mm && (mm = t.match(/(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?/))) {
           d = Number(mm[1]); m = Number(mm[2]);
           if (mm[3]) y = Number(mm[3].length === 2 ? '20' + mm[3] : mm[3]);
       }
@@ -377,13 +378,13 @@ const GENRE_HINTS = {
   // «+3 дня», «2 недели», «месяц», «полгода»
   function parseDuration(text) {
       const t = String(text || '').toLowerCase().replace(',', '.');
-      const mm = t.match(/(\d+(?:\.\d+)?)?\s*(дн|ден|сут|недел|нед|месяц|мес|год|лет|полгода)/);
+      const mm = t.match(/(\d+(?:\.\d+)?)?\s*(дн|ден|сут|недел|нед|месяц|мес|год|лет|полгода|day|days|d\b|week|weeks|w\b|month|months|m\b|year|years|y\b)/);
       if (!mm) return null;
       if (mm[2] === 'полгода') return { months: 6 };
       const n = mm[1] ? Number(mm[1]) : 1;
-      if (/^(дн|ден|сут)/.test(mm[2])) return { days: Math.round(n) };
-      if (/^нед/.test(mm[2])) return { days: Math.round(n * 7) };
-      if (/^мес/.test(mm[2])) return { months: Math.round(n) };
+      if (/^(дн|ден|сут|day|d$)/.test(mm[2])) return { days: Math.round(n) };
+      if (/^(нед|week|w$)/.test(mm[2])) return { days: Math.round(n * 7) };
+      if (/^(мес|month|m$)/.test(mm[2])) return { months: Math.round(n) };
       return { months: Math.round(n * 12) };
   }
 
@@ -424,7 +425,7 @@ const GENRE_HINTS = {
       const list = timeline(st);
       text = String(text || '').trim();
       if (!text || !date) return false;
-      if (list.some(e => e.text.toLowerCase() === text.toLowerCase())) return false;
+      if (list.some(e => e.date === date && e.text.toLowerCase() === text.toLowerCase())) return false;
       list.push({ date, text });
       list.sort((a, b) => a.date.localeCompare(b.date));
       if (list.length > 60) list.splice(0, list.length - 60);
@@ -448,12 +449,12 @@ const GENRE_HINTS = {
       if (place) lines.push(`Место: ${place}. Еда, деньги, бытовые мелочи, обращения, праздники — местные; не переноси реалии других стран.`);
       if (t.flavor) lines.push(`Местный колорит: ${t.flavor}`);
       if (t.date) {
-          const up = upcoming(st, 21);
+          const up = upcoming(st, 14);
           if (up.length) {
               lines.push('Праздники и события рядом (персонажи о них знают; разыгрывать не обязательно, но игнорировать странно):');
-              up.slice(0, 4).forEach(h => lines.push(holidayLine(h, t.date)));
+              up.slice(0, 2).forEach(h => lines.push(holidayLine(h, t.date)));
           }
-          const chron = chronicleLines(st, 12);
+          const chron = chronicleLines(st, 4);
           if (chron.length) {
               lines.push('Хроника — когда что произошло (держись этих сроков; не путай «на прошлой неделе» и «месяц назад»):');
               chron.forEach(l => lines.push(l));
@@ -510,7 +511,10 @@ const GENRE_HINTS = {
           if (!st.direction.time) return true;
           const iso = parseDateText(m[1], t.date);
           if (iso) {
-              if (t.date && iso !== t.date) res.timeMoved = daysBetween(t.date, iso);
+              if (t.date && iso !== t.date) {
+                  res.timeMoved = daysBetween(t.date, iso);
+                  if (iso < t.date) handleDateRollback(st, t.date, iso);
+              }
               else if (!t.date) res.dateSet = iso;
               t.date = iso;
           }
@@ -559,14 +563,15 @@ const GENRE_HINTS = {
 
   // Колорит — отдельным коротким запросом, чтобы модель его не пропускала
   function flavorPrompt(st) {
-      return 'Напиши 2–3 предложения о местном колорите для ролевой игры, действие которой происходит здесь: ' + placeLine(st) + '. ' +
+      return '[OOC: Пауза в ролевой игре. Сейчас ты НЕ пишешь ответ персонажа и не продолжаешь сцену — это короткая техническая справка для автора. ' +
+          'Напиши 2–3 предложения о местном колорите для ролевой игры, действие которой происходит здесь: ' + placeLine(st) + '. ' +
           'Перечисли конкретно: типичная еда и напитки, валюта и привычки с деньгами (например, чаевые), транспорт, климат, бытовые мелочи и манера общения местных. ' +
-          'Это справка для автора, чтобы не путать реалии разных стран. Пиши по-русски, без вступления и без списков — сразу текст.';
+          'Это справка для автора, чтобы не путать реалии разных стран. Не упоминай персонажей и события истории — только само место. Пиши по-русски, без вступления и без списков — сразу текст.]';
   }
   function cleanFlavor(raw) {
       return String(raw || '').replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u2800\u3000\u3164\uFEFF]/g, ' ')
           .replace(/<(think|thinking|reasoning)>[\s\S]*?<\/\1>/gi, '').replace(/\*\*/g, '').trim()
-          .replace(/^["«]|["»]$/g, '').trim();
+          .replace(/^\[|\]$/g, '').replace(/^["«]|["»]$/g, '').trim();
   }
 
   // ===================== Праздничные события =====================
@@ -633,6 +638,7 @@ const GENRE_HINTS = {
       var h = list[i];
       var key = h.name + '|' + h.start;
       if (st.holidayDone[key]) continue;
+      if (h.bday && isHostileOrEx(h.who || h.name.replace(/^День рождения:\s*/i, ''), st)) continue;
       var tr = traditionsFor(h, t.country);
       if (!tr) continue;
       return { h: h, key: key, tr: tr };
@@ -904,16 +910,44 @@ const GENRE_HINTS = {
 
   // Дни рождения
   function normNameB(x) { return String(x || '').trim().toLowerCase().replace(/ё/g, 'е'); }
+
+  const INAPPROPRIATE_BDAY_RE = /(?:бывш(?:ая|ий|ее|их|его|ей|ему|им|ую|ею|ими)?|экс[- ]|враг(?:а|у|ом|е|и|ов|ам|ами|ах)?|соперниц(?:а|ы|е|у|ей|ею|ам|ами|ах)?|соперник(?:а|у|ом|е|и|ов|ам|ами|ах)?|недруг(?:а|у|ом|е|и|ов|ам|ами|ах)?|антагонист(?:ка|ки|ке|ку|кой|а|у|ом|е|ы|ов|ам|ами|ах)?|недоброжелател(?:ь|я|ю|ем|е|и|ей|ям|ями|ях)?|предател(?:ь|ница|ницы|нице|ницу|ницей|я|ю|ем|е|и|ей|ям|ями|ях)?|абьюзер(?:а|у|ом|е|ы|ов|ам|ами|ах)?|токсичн(?:ая|ый|ое|ые|ую|ого|ому|ым|ых|ости|ость)?)/i;
+
+  function isHostileOrEx(nameOrNpc, st) {
+    if (!nameOrNpc) return false;
+    var name = typeof nameOrNpc === 'string' ? nameOrNpc : (nameOrNpc.name || '');
+    if (INAPPROPRIATE_BDAY_RE.test(name)) return true;
+    var norm = normNameB(name);
+    var npc = (st && st.npcs) ? st.npcs.find(function (n) { return normNameB(n.name) === norm; }) : (typeof nameOrNpc === 'object' ? nameOrNpc : null);
+    if (npc) {
+      if (INAPPROPRIATE_BDAY_RE.test(npc.card || '') || INAPPROPRIATE_BDAY_RE.test(npc.status || '')) return true;
+    }
+    if (st && st.relationships) {
+      var rels = st.relationships.filter(function (r) { return normNameB(r.a) === norm || normNameB(r.b) === norm; });
+      for (var i = 0; i < rels.length; i++) {
+        var r = rels[i];
+        var text = (r.type || '') + ' ' + (r.desc || '');
+        if (INAPPROPRIATE_BDAY_RE.test(text)) return true;
+        if (/(соперничество|вражда|неприязнь|холодн|ненавист|конфликт)/i.test(text)) return true;
+      }
+    }
+    return false;
+  }
   function hasBday(st, who) {
     var k = normNameB(who);
     return st.time.custom.some(function (c) { return c.bday && normNameB(c.who) === k; });
   }
-  function bdaySection(st, userName, charNames) {
+  function bdaySection(st, userName, charNames, npcNames) {
     var known = st.time.custom.filter(function (c) { return c.bday; }).map(function (c) { var md = c.md.split('-').map(Number); return c.who + ' — ' + md[1] + ' ' + MONTHS_GEN[md[0] - 1]; });
     var lines = ['Дни рождения' + (known.length ? ' (уже известны: ' + known.join(', ') + ')' : '') + '.'];
     var missing = [userName].concat(charNames || []).filter(function (n) { return n && !hasBday(st, n); });
     if (missing.length) lines.push('Ещё не заданы для: ' + missing.join(', ') + '. Найди дату в карточке персонажа, описании персоны или в чате; если её нигде нет — придумай правдоподобную, подходящую персонажу.');
-    lines.push('BDAY Имя: ДД.ММ — день рождения ' + (missing.length ? 'для них, а также ' : '') + 'для значимого NPC, если о нём есть сведения в истории или он важен для сюжета.');
+    var eligibleNpcs = (npcNames || []).filter(function (n) { return n && !hasBday(st, n) && !isHostileOrEx(n, st); }).slice(0, 8);
+    if (eligibleNpcs.length) {
+      lines.push('У близких и значимых NPC тоже бывают дни рождения (только друзья, семья, возлюбленные, наставники, добрые коллеги или шеф). Ещё нет дат у: ' + eligibleNpcs.join(', ') + '. Добавь BDAY для одного-двух самых близких из них; если даты в истории нет — придумай. Если понятно, где и как этот персонаж будет праздновать, допиши после даты коротко, например «— отмечает в офисе».');
+    }
+    lines.push('СТРОГО ЗАПРЕЩЕНО добавлять дни рождения для бывших партнёров (ex), соперников, врагов, антагонистов или токсичных персонажей — такие даты не отмечаются и не являются праздниками.');
+    lines.push('BDAY Имя: ДД.ММ — день рождения' + (missing.length || eligibleNpcs.length ? ' (только для близких персонажей из перечисленных выше; не больше двух NPC за раз)' : ' близкого и важного для сюжета NPC') + '.');
     return lines.join('\n');
   }
   // Команды TASK и BDAY. Возвращает true, если строка распознана.
@@ -923,9 +957,13 @@ const GENRE_HINTS = {
     m = line.match(/^BDAY\s*[:：]?\s*\[?([^\]:：]{1,60}?)\]?\s*[:：—–-]\s*(.+)$/i);
     if (m) {
       var who = m[1].trim();
+      if (isHostileOrEx(who, st)) return true;
       var iso = parseDateText(m[2], '2000-01-01');
-      if (iso && !hasBday(st, who)) {
-        st.time.custom.push({ name: 'День рождения: ' + who, md: iso.slice(5), bday: true, who: who });
+      if (iso && !hasBday(st, who) && (res.bdays || []).length < 4) {
+        var note = (m[2].match(/\d{1,2}[.\/]\d{1,2}(?:[.\/]\d{2,4})?\s*[—–-]\s*(.+)$/) || [])[1] || '';
+        var entry = { name: 'День рождения: ' + who, md: iso.slice(5), bday: true, who: who };
+        if (note) entry.note = note.trim().replace(/\]$/, '');
+        st.time.custom.push(entry);
         (res.bdays = res.bdays || []).push(who);
       }
       return true;
@@ -938,6 +976,7 @@ const GENRES = ['Комедия', 'Повседневность', 'Романт�
 
 const defaults = {
     enabled: true,
+    actionPrompts: true,
     interval: 12,
     depth: 4,
     role: 0,
@@ -949,6 +988,16 @@ const defaults = {
     events: true,
     leadDays: 3,
     ffButton: true,
+    wardrobeImages: true,
+    accents: true,
+    mesButtons: true,
+    imageSource: '',
+    imgApiBase: 'https://api.linkapi.ai/v1',
+    imgApiKey: '',
+    imgApiModel: 'gpt-image-2-c',
+    imgApiSize: '1536x1024',
+    imgOrientation: 'portrait',
+    imageRef: true,
     showToasts: true,
     hideSpoilers: false,
     thinkPrompt: DEFAULT_THINK,
@@ -1017,6 +1066,8 @@ function store() {
     if (!st.arcs) st.arcs = [];
     if (!st.evolved) st.evolved = [];
     if (!st.nextArcId) st.nextArcId = 1;
+    if (!Array.isArray(st.relationships)) st.relationships = [];
+    if (!st.nextRelId) st.nextRelId = 1;
     if (st.direction.time === undefined) st.direction.time = true;
     if (!st.time) st.time = { date: '', country: '', countryName: '', city: '', flavor: '', flavorLocked: false, custom: [] };
     if (!Array.isArray(st.time.custom)) st.time.custom = [];
@@ -1025,6 +1076,15 @@ function store() {
     if (st.direction.wardrobe === undefined) st.direction.wardrobe = true;
     if (!st.wardrobe || typeof st.wardrobe !== 'object') st.wardrobe = { active: null, history: [] };
     if (!Array.isArray(st.wardrobe.history)) st.wardrobe.history = [];
+    if (!Array.isArray(st.wardrobe.box)) st.wardrobe.box = [];
+    if (!Array.isArray(st.wardrobe.equipped)) st.wardrobe.equipped = [];
+    if (!st.wardrobe.nextItemId) st.wardrobe.nextItemId = 1;
+    if (st.direction.gacha === undefined) st.direction.gacha = true;
+    if (!st.gacha || typeof st.gacha !== 'object') st.gacha = { active: null, pity: 0, spins: [], pending: null, total: 0 };
+    if (!Array.isArray(st.gacha.spins)) st.gacha.spins = [];
+    if (st.direction.map === undefined) st.direction.map = true;
+    if (!st.map || typeof st.map !== 'object') st.map = { places: [], current: null, nextId: 1 };
+    if (!Array.isArray(st.map.places)) st.map.places = [];
     ensureHolidayState(st);
     return st;
 }
@@ -1051,10 +1111,8 @@ function buildGenreDirection(st) {
     const genres = [...d.genres];
     const custom = d.customGenre?.trim();
     if (custom) genres.push(custom);
-    const insp = d.inspiration?.trim();
-    const avoid = d.avoid?.trim();
     const declared = d.lines?.trim();
-    if (!genres.length && !insp && !avoid && !declared) return '';
+    if (!genres.length && !declared) return '';
     const lines = ['НАПРАВЛЕНИЕ ИСТОРИИ — главное правило для всех разделов блокнота (задумок, тайн, развития):'];
     const hint = g => GENRE_HINTS[g] ? `${g} (${GENRE_HINTS[g]})` : g;
     if (genres.length === 1) {
@@ -1068,8 +1126,6 @@ function buildGenreDirection(st) {
         lines.push('— жанр определяет, из чего строятся задумки и какие в них ставки. Предлагай только то, что работает на выбранный жанр. Не тащи элементы чужих жанров: если выбраны лёгкие жанры, не вводи внешние угрозы, бюрократию, преследование, опасность — конфликты должны быть мелкими, личными и решаемыми.');
         lines.push('— тайны, слухи и интриги уместны в любом жанре — меняется только их характер. В комедии и повседневности это сплетни соседей, нелепые слухи, недоразумения, секрет ради сюрприза, чьи-то тайные привычки; в романтике — тайный поклонник, слухи о романе, интрижки, ревность, скрытые чувства. Запрет на угрозы и опасность не отменяет интриги — просто делай их лёгкими.');
     }
-    if (insp) lines.push(`— источник вдохновения: ${insp}. Бери оттуда ситуации, детали, характеры и настроение, но не копируй напрямую — переноси в этот мир и к этим персонажам.`);
-    if (avoid) lines.push(`— НИКОГДА не предлагай: ${avoid}.`);
     if (declared) lines.push(`— ЗАЯВЛЕННЫЕ ЛИНИИ — игрок хочет видеть их в истории: ${declared}. Держи их живыми: заводи для них арки, тайны, слухи и задумки и периодически возвращай этих персонажей в сюжет, даже если о них давно не было речи.`);
     lines.push('Не ломай логику уже идущей истории.');
     return lines.join('\n');
@@ -1087,9 +1143,39 @@ function formatIntrigues(list) {
     }).join('\n');
 }
 
+function normName(x) {
+    return String(x || '').trim().toLowerCase().replaceAll('ё', 'е');
+}
+
 function findNpc(st, name) {
-    const key = name.trim().toLowerCase().replaceAll('ё', 'е');
-    return st.npcs.find(n => n.name.trim().toLowerCase().replaceAll('ё', 'е') === key);
+    const key = normName(name);
+    return st.npcs.find(n => normName(n.name) === key);
+}
+
+function findRel(st, a, b) {
+    const na = normName(a), nb = normName(b);
+    return (st.relationships || []).find(r => {
+        const ra = normName(r.a), rb = normName(r.b);
+        if (r.arrow === '→') return ra === na && rb === nb;
+        return (ra === na && rb === nb) || (ra === nb && rb === na);
+    });
+}
+
+const REL_INJECT_HEADER = '[Отношения и связи между персонажами — канон их динамики. Держись этих линий в разговорах, взглядах, симпатиях и спорах.]';
+
+function formatRelationships(st, forThink = false) {
+    const list = st.relationships || [];
+    if (!list.length) return '(пока нет)';
+    return list.map(r => {
+        const arrow = r.arrow || '↔';
+        const typeStr = r.type ? ` [${r.type}]` : '';
+        if (forThink) {
+            let line = `R${r.id} ${r.a} ${arrow} ${r.b}${typeStr}: ${r.desc || ''}`;
+            if (r.locked) line += ' (правлено вручную — не меняй)';
+            return line;
+        }
+        return `— ${r.a} ${arrow} ${r.b}${typeStr}: ${r.desc || ''}`;
+    }).join('\n');
 }
 
 function formatNpcs(list, forThink = false) {
@@ -1104,15 +1190,21 @@ function formatNpcs(list, forThink = false) {
 
 function buildNpcSection(st) {
     if (!st?.direction?.npcs) return '';
-    return `Персонажи (NPC). Ты ведёшь краткие карточки значимых NPC — это канон истории.
+    return `Персонажи (NPC) и их связи. Ты ведёшь краткие карточки значимых NPC и динамику отношений между ними — это канон истории.
 
 Текущие карточки:
 ${formatNpcs(st.npcs, true)}
 
+Связи и отношения между персонажами:
+${formatRelationships(st, true)}
+
 Команды для них (с новой строки, вместе с остальными):
 NPC [Имя]: кто это, внешность, характер, отношение к {{user}} — 1–3 предложения. Для нового NPC или если в истории изменилось что-то постоянное.
 NPCSTATE [Имя]: где он сейчас и что с ним происходит — коротко.
-Если у значимого NPC из чата ещё нет карточки — обязательно заведи её. Заводи только NPC, которые реально появились в чате и важны для истории. Не заводи карточки для {{char}} и {{user}}. Тайные мотивы сюда не пиши — для них есть тайны. Карточки NPC не считаются в лимит новых записей.`;
+REL [Имя1 ↔ Имя2]: тип | как относятся друг к другу / что между ними — взаимная связь (дружба, роман, соперничество, семейные узы, тайный союз).
+REL [Имя1 → Имя2]: тип | отношение с одной стороны (безответная влюблённость, тайная ревность, подозрение, зависть, долг).
+DROP #R1 — если связь распалась или потеряла сюжетное значение.
+Если у значимого NPC из чата ещё нет карточки — обязательно заведи её. Заводи только NPC, которые реально появились в чате и важны для истории. Не заводи карточки для {{char}} и {{user}}. Отношения между NPC и {{char}}/{{user}} тоже можно фиксировать через REL. Тайные мотивы сюда не пиши — для них есть тайны. Карточки и связи не считаются в лимит новых записей.`;
 }
 
 function formatArcs(st, forThink = false) {
@@ -1211,17 +1303,31 @@ function fillTemplate(template, notes, direction = '', intrigues = '', npcs = ''
         .replace(/\n{3,}/g, '\n\n');
 }
 
+
+function buildActionPromptsInjection() {
+    const user = storyNames().user;
+    return `[Подсказки действий: в самом конце своего ответа добавь одну скрытую служебную строку с тремя вариантами следующего хода для игрока (${user}) — что может сделать или сказать САМА ${user} в ответ на происходящее:
+<!--ACTIONS: вариант 1 | вариант 2 | вариант 3-->
+Требования к вариантам:
+— Все 3 варианта — это действия и реплики САМОЙ ${user} (что сделает или скажет ${user}), а НЕ других персонажей по отношению к ней! Никаких «протянуть ${user}», «спросить у ${user}», «погладить ${user}» — действует только сама ${user}.
+— Три варианта должны существенно отличаться друг от друга по смыслу и тону (не быть перефразировкой одной мысли).
+— Каждый вариант ведёт сцену в другое русло: сочетай разные формы (прямая речь от ${user}, физическое действие или жест, пауза/молчание, смена темы, неожиданная реакция).
+— Формулируй кратко (1–2 фразы), чтобы ${user} могла отправить этот вариант как свой ход. Метка невидима для игрока, не упоминай её в основном тексте ответа.]`;
+}
+
 function updateInjection() {
     const c = ctx();
     const s = settings();
     const st = store();
     const showIntrigues = st?.direction?.intrigues && st.intrigues.length;
     const showNpcs = st?.direction?.npcs && st.npcs.length;
+    const showRels = st?.direction?.npcs && (st.relationships || []).length;
     const showArcs = st?.direction?.arcs && (st.arcs.length || st.evolved.length);
     const timeBlock = st && st.direction.time ? [buildTimeInjection(st), s.events ? buildHolidayInjection(st) : ''].filter(Boolean).join('\n\n') : '';
     const linesBlock = st?.direction?.lines?.trim() ? `[Линии, которые игрок хочет видеть в истории: ${st.direction.lines.trim()}. Время от времени давай им проявиться: эти персонажи появляются, их отношения развиваются, о них говорят. Естественно и не в каждой сцене.]` : '';
-    const wardBlock = st ? wardrobeInjection(st) : '';
-    if (!s.enabled || !st || (!st.notes.length && !showIntrigues && !showNpcs && !showArcs && !timeBlock && !linesBlock && !wardBlock)) {
+    const wardBlock = st ? [wardrobeInjection(st), gachaInjection(st)].filter(Boolean).join('\n\n') : '';
+    const actionBlock = (s.actionPrompts && st) ? buildActionPromptsInjection() : '';
+    if (!s.enabled || !st || (!st.notes.length && !showIntrigues && !showNpcs && !showRels && !showArcs && !timeBlock && !linesBlock && !wardBlock && !actionBlock)) {
         c.setExtensionPrompt(INJECT_KEY, '', POS_IN_CHAT, 0);
         return;
     }
@@ -1230,6 +1336,7 @@ function updateInjection() {
     if (wardBlock) blocks.push(wardBlock);
     if (linesBlock) blocks.push(linesBlock);
     if (showNpcs) blocks.push(NPC_INJECT_HEADER + '\n' + formatNpcs(st.npcs));
+    if (showRels) blocks.push(REL_INJECT_HEADER + '\n' + formatRelationships(st));
     if (showArcs) blocks.push(ARC_INJECT_HEADER + '\n' + formatArcs(st));
     if (st.notes.length) blocks.push(fillTemplate(s.injectPrompt, st.notes));
     if (showIntrigues) blocks.push(INTRIGUE_INJECT_HEADER + '\n' + formatIntrigues(st.intrigues));
@@ -1241,15 +1348,29 @@ function updateInjection() {
         false,
         Number(s.role) || 0,
     );
+    if (!s.enabled || !s.actionPrompts || !st) {
+        c.setExtensionPrompt(ACTION_INJECT_KEY, '', POS_IN_CHAT, 0);
+    } else {
+        c.setExtensionPrompt(
+            ACTION_INJECT_KEY,
+            buildActionPromptsInjection(),
+            POS_IN_CHAT,
+            0,
+            false,
+            Number(s.role) || 0,
+        );
+    }
 }
 
 // Совместимость со старой и новой сигнатурой generateQuietPrompt
 let ownRequest = false;
+let ownPrompt = '';
 let ffPending = false;
 
 async function quietGenerateOnce(prompt) {
     const fn = ctx().generateQuietPrompt;
     ownRequest = true;
+    ownPrompt = String(prompt || '');
     try {
         if (fn.length === 0) {
             return await fn({ quietPrompt: prompt });
@@ -1257,6 +1378,7 @@ async function quietGenerateOnce(prompt) {
         return await fn(prompt, false, false);
     } finally {
         ownRequest = false;
+        ownPrompt = '';
     }
 }
 
@@ -1264,17 +1386,24 @@ async function quietGenerateOnce(prompt) {
 // OpenAI-совместимый прокси без постобработки промпта на этом падает (Bad Request),
 // поэтому в наших запросах делаем его сообщением пользователя.
 const OWN_MARKER = '[OOC: Пауза в ролевой игре';
+function msgContentText(content) {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) return content.map(part => (typeof part === 'string' ? part : part?.text || '')).join('');
+    return '';
+}
 function fixOwnPromptRole(data) {
     if (!data || data.dryRun || !Array.isArray(data.chat)) return;
-    const marker = ownRequest ? OWN_MARKER : ffPending ? FF_MARKER : null;
+    // свой запрос узнаём по началу его текста (не все наши промпты начинаются с OOC-пометки)
+    const marker = ownRequest ? (ownPrompt.slice(0, 60) || OWN_MARKER) : ffPending ? FF_MARKER : null;
     if (!marker) return;
     const msgs = data.chat;
     for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i];
-        if (typeof m?.content !== 'string' || !m.content.includes(marker)) continue;
+        const contentStr = msgContentText(m?.content);
+        if (!contentStr || !contentStr.includes(marker)) continue;
         if (m.role !== 'system') return;
         const prev = msgs[i - 1];
-        if (prev && prev.role === 'user' && typeof prev.content === 'string') {
+        if (prev && prev.role === 'user' && typeof prev.content === 'string' && typeof m.content === 'string') {
             prev.content += '\n\n' + m.content;
             msgs.splice(i, 1);
         } else {
@@ -1310,6 +1439,11 @@ async function quietGenerateRetry(prompt) {
     }
 }
 
+// Модели иногда пишут тег без скобок: «ADD план: …», «INTRIGUE слух — …». Приводим к «ADD [план]: …».
+function bracketTag(line) {
+    return line.replace(/^(ADD|INTRIGUE|ITEM)\s+([^\s\[\]:：—–-]{1,20})\s*([:：—–-])/i, '$1 [$2]$3');
+}
+
 function parseAndApply(raw) {
     const st = store();
     const s = settings();
@@ -1319,6 +1453,8 @@ function parseAndApply(raw) {
     const npcsOn = !!st.direction?.npcs;
     res.npcNew = 0;
     res.npcUpd = 0;
+    res.relNew = 0;
+    res.relUpd = 0;
     const arcsOn = !!st.direction?.arcs;
     const need = Math.max(1, Number(s.minStimuli) || 2);
     Object.assign(res, { arcNew: 0, stimuli: 0, shifts: 0, evolved: 0, regress: 0 });
@@ -1332,11 +1468,33 @@ function parseAndApply(raw) {
     if (!text || /^NONE[.!]?$/i.test(text)) return res;
 
     for (let line of text.split('\n')) {
-        line = line.trim().replace(/^[-*•>\s]+/, '').replace(/^`+|`+$/g, '');
+        line = bracketTag(line.trim().replace(/^[-*•>\s]+/, '').replace(/^`+|`+$/g, ''));
         if (!line) continue;
         if (applyTimeCommand(st, line, res)) continue;
         if (st.direction.time && applyEventCommand(st, line, res)) continue;
 
+        const mi = line.match(/^ITEM\s*(?:\[([^\]]{1,30})\])?\s*[:：—–-]\s*(.+)$/i);
+        if (mi) {
+            if (accentsOn(st)) {
+                const [title, ...rest] = mi[2].split(/\s[—–-]\s/);
+                const t = title.trim().replace(/^[«"]|[»"]$/g, '').replace(/\]$/, '');
+                if (t && !st.wardrobe.box.some(x => x.title.toLowerCase() === t.toLowerCase()) && st.wardrobe.box.length < 30) {
+                    st.wardrobe.box.push({ id: st.wardrobe.nextItemId++, kind: accentKind(mi[1] || t), title: t, desc: '', origin: rest.join(' — ').trim().replace(/\]$/, ''), at: len });
+                    (res.items = res.items || []).push(t);
+                }
+            }
+            continue;
+        }
+        const mp = line.match(/^MAP\s*[:：—–-]\s*(.+)$/i);
+        if (mp) {
+            if (st.direction.map) { const pl = addPlace(st, mp[1], 'story'); if (pl) (res.places = res.places || []).push(pl.title); }
+            continue;
+        }
+        const mh = line.match(/^HERE\s*[:：—–-]\s*(.+)$/i);
+        if (mh) {
+            if (st.direction.map) { const pl = findPlace(st, mh[1].split('|')[0]); if (pl) st.map.current = pl.id; }
+            continue;
+        }
         if (/^OUTFIT\s*_?\s*DONE\b/i.test(line)) {
             res.outfitDone = true;
             continue;
@@ -1397,6 +1555,12 @@ function parseAndApply(raw) {
                 } else {
                     res.shifts++;
                 }
+            } else if (desc) {
+                // Если для полного сдвига ещё мало стимулов, сохраняем наблюдение модели как стимул
+                a.stimuli.push({ text: desc, at: len });
+                if (a.stimuli.length > 6) a.stimuli.shift();
+                a.sinceShift++;
+                res.stimuli++;
             }
             continue;
         }
@@ -1431,6 +1595,48 @@ function parseAndApply(raw) {
             if (n) {
                 n.status = m[2].trim();
                 res.npcUpd++;
+            }
+            continue;
+        }
+
+        m = line.match(/^REL(?=[\s\[:：])\s*[:：]?\s*\[?([^\[:：—–\n]+?)\s*(↔|<->|->|→|—|–|\+)\s*([^\]:：—–\n]+?)\]?\s*[:：—–-]\s*(.+)$/i);
+        if (m) {
+            if (npcsOn) {
+                const a = m[1].trim();
+                const arrow = (m[2] === '->' || m[2] === '→') ? '→' : '↔';
+                const b = m[3].trim();
+                const rest = m[4].trim().replace(/\]$/, '');
+                let type = '', desc = rest;
+                if (rest.includes('|')) {
+                    const parts = rest.split('|');
+                    type = parts[0].trim();
+                    desc = parts.slice(1).join('|').trim();
+                } else {
+                    const tm = rest.match(/^\[([^\]]{1,30})\]\s*(.+)$/);
+                    if (tm) { type = tm[1].trim(); desc = tm[2].trim(); }
+                }
+                if (!st.relationships) st.relationships = [];
+                let rel = findRel(st, a, b);
+                if (rel) {
+                    if (!rel.locked) {
+                        if (type) rel.type = type;
+                        rel.desc = desc;
+                        rel.arrow = arrow;
+                        res.relUpd++;
+                    }
+                } else if (st.relationships.length < 30) {
+                    st.relationships.push({ id: st.nextRelId++, a, b, arrow, type: type || 'связь', desc, locked: false, at: len });
+                    res.relNew++;
+                }
+            }
+            continue;
+        }
+
+        m = line.match(/^DROP\s*#?\s*R\s*(\d+)/i);
+        if (m) {
+            if (st.relationships) {
+                const id = Number(m[1]);
+                st.relationships = st.relationships.filter(r => r.id !== id);
             }
             continue;
         }
@@ -1517,6 +1723,8 @@ function report(res, manual, raw) {
     if (res.solved) parts.push(`раскрыто тайн: ${res.solved}`);
     if (res.npcNew) parts.push(`новых NPC: ${res.npcNew}`);
     if (res.npcUpd) parts.push(`обновлено NPC: ${res.npcUpd}`);
+    if (res.relNew) parts.push(`новых связей: ${res.relNew}`);
+    if (res.relUpd) parts.push(`обновлено связей: ${res.relUpd}`);
     if (res.arcNew) parts.push(`новых арок: ${res.arcNew}`);
     if (res.stimuli) parts.push(`стимулов: ${res.stimuli}`);
     if (res.shifts) parts.push(`🌱 сдвигов характера: ${res.shifts}`);
@@ -1528,6 +1736,8 @@ function report(res, manual, raw) {
     if (res.events) parts.push(`📜 в хронику: ${res.events.length}`);
     if (res.bdays) parts.push(`🎂 дни рождения: ${res.bdays.join(', ')}`);
     if (res.outfit && store().direction.wardrobe) parts.push('👗 пора выбрать наряд');
+    if (res.items) parts.push(`🎁 в шкатулку: ${res.items.join(', ')}`);
+    if (res.places) parts.push(`🗺 на карте: ${res.places.join(', ')}`);
     if (res.outfitDone && store().direction.wardrobe) parts.push('🎭 образ отыгран');
     holidaySummary(res).forEach(x => parts.push(escapeHtml(x)));
     if (!parts.length) {
@@ -1553,6 +1763,52 @@ function escapeHtml(t) {
     return String(t).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
 
+
+async function generateActionPromptsNow() {
+    const c = ctx();
+    const chat = c.chat;
+    if (!chat || !chat.length) return toastr.warning('Чат пуст', '💡 Подсказки');
+    const lastIdx = chat.length - 1;
+    const lastMsg = chat[lastIdx];
+    if (!lastMsg || lastMsg.is_user) return toastr.info('Подсказки действий создаются для последнего ответа персонажа', '💡 Подсказки');
+
+    if (Array.isArray(lastMsg.extra?.actions) && lastMsg.extra.actions.length) {
+        renderActionPrompts();
+        return;
+    }
+
+    const user = storyNames().user;
+    const prompt = `[OOC: Пауза в ролевой игре. Ты — автор этой истории. Предложи три возможных варианта следующего хода для игрока (${user}) — что может сделать или сказать САМА ${user} в ответ на последнее сообщение:
+<!--ACTIONS: вариант 1 | вариант 2 | вариант 3-->
+Требования к вариантам:
+— Все 3 варианта — это действия и реплики САМОЙ ${user} (что сделает или скажет ${user}), а НЕ других персонажей по отношению к ней! Никаких «протянуть ${user}», «спросить у ${user}», «посмотреть на ${user}» — действует только сама ${user}.
+— Три варианта должны существенно отличаться друг от друга по смыслу и тону (не быть перефразировкой одной мысли).
+— Каждый вариант ведёт сцену в другое русло: сочетай разные формы (прямая речь от ${user}, физическое действие или жест, пауза/молчание, смена темы, неожиданная реакция).
+— Формулируй кратко (1–2 фразы), чтобы ${user} могла выбрать вариант как свой следующий ход.
+Ответь ТОЛЬКО строкой в формате <!--ACTIONS: вариант 1 | вариант 2 | вариант 3-->]`;
+
+    toastr.info('Придумываю варианты действий…', '💡 Подсказки');
+    try {
+        const raw = await quietGenerate(prompt);
+        const m = raw && raw.match(/(?:<!--\s*ACTIONS|\[\s*ACTIONS|\bACTIONS)\s*[:：]\s*([\s\S]+?)(?:-->|\]|$)/i);
+        if (m) {
+            const parsed = parseActionPrompts(m[1]);
+            if (parsed.length) {
+                lastMsg.extra = lastMsg.extra || {};
+                lastMsg.extra.actions = parsed;
+                await c.saveChat();
+                renderActionPrompts();
+                toastr.success('Варианты действий готовы!', '💡 Подсказки');
+                return;
+            }
+        }
+        toastr.warning('Модель ответила не по формату, попробуй ещё раз', '💡 Подсказки');
+    } catch (e) {
+        console.error('[npc_notebook] actions generation error:', e);
+        toastr.error('Не удалось сгенерировать варианты', '💡 Подсказки');
+    }
+}
+
 async function think(manual = false) {
     if (busy) return;
     const s = settings();
@@ -1569,10 +1825,11 @@ async function think(manual = false) {
     setStatus('Модель листает блокнот…');
     // убираем инъекцию на время размышления, чтобы блокнот не дублировался
     ctx().setExtensionPrompt(INJECT_KEY, '', POS_IN_CHAT, 0);
+    ctx().setExtensionPrompt(ACTION_INJECT_KEY, '', POS_IN_CHAT, 0);
 
     try {
         const tpl = ensureSections(s.thinkPrompt);
-        const raw = await quietGenerate(fillTemplate(tpl, st.notes, buildDirection(st), buildIntrigueSection(st), buildNpcSection(st), buildArcSection(st), buildTimeSectionFull(st), buildWardrobeSection(st)));
+        const raw = await quietGenerate(fillTemplate(tpl, st.notes, buildDirection(st), buildIntrigueSection(st), buildNpcSection(st), buildArcSection(st), buildTimeSectionFull(st), [buildWardrobeSection(st), buildMapSection(st)].filter(Boolean).join('\n')));
         if (ctx().chatId !== chatIdAtStart) return; // чат сменили, пока модель думала
         st.lastRaw = String(raw ?? '');
         const res = parseAndApply(raw);
@@ -1588,7 +1845,7 @@ async function think(manual = false) {
                 if (await revealOutfit(st)) afterBusy = showRevealPopup;
             } else if (res.outfit && !w.active) {
                 setStatus('👗 Модель подбирает образы…');
-                if (await generateOutfits(st, res.outfit)) afterBusy = showWardrobePopup;
+                if (await generateOutfits(st, res.outfit)) afterBusy = presentLooks;
             }
         }
     } catch (err) {
@@ -1622,7 +1879,7 @@ function storyNames() {
 function buildTimeSectionFull(st) {
     if (!st?.direction?.time) return '';
     const names = storyNames();
-    return [buildTimeSection(st), bdaySection(st, names.user, names.chars), settings().events ? holidayCheckSection(st) : ''].filter(Boolean).join('\n\n');
+    return [buildTimeSection(st), bdaySection(st, names.user, names.chars, st.direction.npcs ? st.npcs.map(n => n.name) : []), settings().events ? holidayCheckSection(st) : ''].filter(Boolean).join('\n\n');
 }
 
 // Если в своём промпте нет нужных разделов, вставляем их перед финальной инструкцией
@@ -1657,7 +1914,7 @@ async function rerollNote(id, kind = 'note') {
         const clean = raw.replace(/<(think|thinking|reasoning)>[\s\S]*?<\/\1>/gi, '').replace(/\*\*/g, '');
         let m = null;
         for (let line of clean.split('\n')) {
-            line = line.trim().replace(/^[-*•>\s]+/, '');
+            line = bracketTag(line.trim().replace(/^[-*•>\s]+/, ''));
             m = line.match(isIntrigue
                 ? /^INTRIGUE\s*(?:\[([^\]]{1,40})\])?\s*[:：—–-]\s*(.+)$/i
                 : /^ADD\s*(?:\[([^\]]{1,40})\])?\s*[:：—–-]\s*(.+)$/i);
@@ -1693,6 +1950,15 @@ async function fillFlavor(st, manual) {
     try {
         const text = cleanFlavor(await quietGenerate(flavorPrompt(st)));
         if (!text) { if (manual) toastr.warning('Модель не написала колорит — попробуй ещё раз', 'Блокнот рассказчика'); return false; }
+        // модель иногда вместо справки продолжает сцену — такое не записываем
+        const names = storyNames();
+        const heroes = [names.user, ...names.chars, ...st.npcs.map(n => n.name)].filter(n => n && n.length > 2).map(n => n.toLowerCase().replace(/ё/g, 'е'));
+        const low = text.toLowerCase().replace(/ё/g, 'е');
+        if (heroes.some(n => low.includes(n)) || text.length > 1200) {
+            st.lastRaw = text;
+            toastr.warning('Вместо колорита модель продолжила сцену — не записала. Нажми «Сгенерировать колорит» ещё раз.', 'Блокнот рассказчика', { timeOut: 9000 });
+            return false;
+        }
         t.flavor = text;
         t.flavorLocked = false;
         if (manual) toastr.success('🧭 Колорит обновлён', 'Блокнот рассказчика');
@@ -1879,28 +2145,105 @@ async function rerollHolidayTask(idx) {
 
 // ---------- Гардероб 👗 ----------
 
+const ACCENT_KINDS = {
+    perfume: { icon: '🌸', name: 'духи' },
+    stone: { icon: '💎', name: 'камень' },
+    makeup: { icon: '💄', name: 'макияж' },
+    pocket: { icon: '👜', name: 'мелочь в сумочке' },
+    accessory: { icon: '💍', name: 'аксессуар' },
+    find: { icon: '🎴', name: 'находка' },
+};
+// вещь из находок: украшения и духи годятся в штрихи, остальное — просто находка
+function findKind(title) {
+    const w = String(title || '').toLowerCase();
+    if (/дух|парфюм|аромат|perfume/.test(w)) return 'perfume';
+    if (/камен|камн|талисман|амулет|кристалл/.test(w)) return 'stone';
+    if (/кольц|колечк|перстен|серьг|серёж|кулон|брош|браслет|ожерел|колье|подвеск|часы|часики|заколк|гребн|шарф|платок|сумоч|клатч|ленточк|бусы|медальон|цепочк/.test(w)) return 'accessory';
+    return 'find';
+}
+// в штрихи годится всё из шкатулки: находки — как «мелочь в сумочке»
+function wearableBox(st) {
+    return st.wardrobe.box;
+}
+function accentKind(word) {
+    const w = String(word || '').toLowerCase();
+    if (/дух|парфюм|аромат|perfume/.test(w)) return 'perfume';
+    if (/макияж|косметик|помад|блеск для губ|тушь|румян|тени для|стрелк|makeup|lipstick/.test(w)) return 'makeup';
+    if (/мелоч|в сумочк|в карман|pocket/.test(w)) return 'pocket';
+    if (/камен|камн|талисман|амулет|кристалл|stone/.test(w)) return 'stone';
+    return 'accessory';
+}
+function accentsOn(st) {
+    return !!settings().accents && !!st?.direction?.wardrobe;
+}
+function boxList(st, all = false) {
+    return (all ? st.wardrobe.box : wearableBox(st)).map(x => `${ACCENT_KINDS[x.kind]?.icon || '🎁'} ${x.title}${x.origin ? ` (${x.origin})` : ''}`).join('; ');
+}
+
 function buildWardrobeSection(st) {
     if (!st?.direction?.wardrobe) return '';
     const w = st.wardrobe;
-    if (w.active?.status === 'choosing') return '';
+    const parts = [];
     if (w.active?.status === 'worn') {
         const look = w.active.look;
-        return `Гардероб. Наряд {{user}}: «${look.title}»${w.active.occasion ? ` (для: ${w.active.occasion})` : ''}.
-OUTFITDONE — если сцена, ради которой выбирался наряд, уже прошла или {{user}} уже переоделся(-ась).`;
+        parts.push(`Гардероб. Наряд {{user}}: «${look.title}»${w.active.accent ? ` + ${w.active.accent.title}` : ''}${w.active.occasion ? ` (для: ${w.active.occasion})` : ''}.
+OUTFITDONE — если сцена, ради которой выбирался наряд, уже прошла или {{user}} уже переоделся(-ась).`);
+    } else if (!w.active) {
+        const recent = w.history.slice(-3).map(h => h.occasion).filter(Boolean).join('; ');
+        parts.push(`Гардероб. Если в ближайшей сцене или скоро по сюжету важен наряд {{user}} (свидание, вечеринка, праздник, ужин с родными, важная встреча, собеседование) и образ для неё ещё не выбирали — OUTFIT: повод (коротко, например «ужин у родителей на День благодарения»). Только когда наряд действительно имеет значение.${recent ? ` Недавно уже выбирали образы для: ${recent}.` : ''}`);
     }
-    const recent = w.history.slice(-3).map(h => h.occasion).filter(Boolean).join('; ');
-    return `Гардероб. Если в ближайшей сцене или скоро по сюжету важен наряд {{user}} (свидание, вечеринка, праздник, ужин с родными, важная встреча) и образ для неё ещё не выбирали — OUTFIT: повод (коротко, например «ужин у родителей на День благодарения»). Только когда наряд действительно имеет значение.${recent ? ` Недавно уже выбирали образы для: ${recent}.` : ''}`;
+    if (accentsOn(st)) {
+        parts.push(`Шкатулка {{user}}: ${w.box.length ? boxList(st, true) : '(пока пусто)'}.
+ITEM [духи|косметика|аксессуар|мелочь]: что это — откуда (подарок, покупка, находка). Только если в чате у {{user}} действительно появилась такая вещь и её ещё нет в шкатулке.`);
+    }
+    return parts.join('\n');
+}
+
+function auraInjection(st) {
+    const au = st?.direction?.wardrobe && st.wardrobe.aura;
+    if (!au) return '';
+    const len = ctx().chat?.length ?? 0;
+    const alive = st.time.date && au.until ? st.time.date <= au.until : len <= (au.untilMsg || 0);
+    if (!alive) return '';
+    return `[Талисман: ${storyNames().user} носит ${au.title}${au.desc ? ` — ${au.desc}` : ''}. Вокруг держится лёгкий флёр${au.effects ? `: ${au.effects}` : ''}. Едва уловимо, на уровне настроения и совпадений; никто не говорит о магии прямо.]`;
 }
 
 function wardrobeInjection(st) {
-    const a = st?.direction?.wardrobe && st.wardrobe.active;
-    if (!a || a.status !== 'worn') return '';
+    if (!st?.direction?.wardrobe) return '';
+    const out = [];
+    const a = st.wardrobe.active;
     const user = storyNames().user;
-    const look = a.look;
-    const effects = look.effects
-        ? `Скрытые последствия этого выбора (игрок их не знает): ${look.effects}. Покажи их в сцене через взгляды, поведение и реплики персонажей, когда они увидят наряд — естественно, без цифр и объявлений, и не намекай, что реакции были известны заранее.`
-        : 'Персонажи реагируют на него в своём характере — кому-то понравится, кому-то нет.';
-    return `[Наряд ${user}${a.occasion ? ` (${a.occasion})` : ''}: «${look.title}» — ${String(look.desc || '').replace(/[.\s]+$/, '')}. ${effects}]`;
+    if (a?.status === 'choosing') {
+        out.push(`[${user} сейчас выбирает, что надеть${a.occasion ? ` (${a.occasion})` : ''}. Не описывай, во что ${user} одет(а), — это решится выбором.]`);
+    } else if (a?.status === 'worn') {
+        const look = a.look;
+        const effects = look.effects
+            ? `Скрытые последствия этого выбора (игрок их не знает): ${look.effects}. Покажи их в сцене через взгляды, поведение и реплики персонажей, когда они увидят наряд — естественно, без цифр и объявлений, и не намекай, что реакции были известны заранее.`
+            : 'Персонажи реагируют на него в своём характере — кому-то понравится, кому-то нет.';
+        let text = `[Наряд ${user}${a.occasion ? ` (${a.occasion})` : ''}: «${look.title}» — ${String(look.desc || '').replace(/[.\s]+$/, '')}. ${effects}`;
+        const ac = a.accent;
+        if (ac) {
+            const k = ACCENT_KINDS[ac.kind] || ACCENT_KINDS.accessory;
+            text += `\nШтрих к образу (${k.name}): «${ac.title}»${ac.desc ? ` — ${String(ac.desc).replace(/[.\s]+$/, '')}` : ''}${ac.origin ? ` (${ac.origin})` : ''}.`;
+            if (ac.effects) text += ` Скрытые последствия: ${ac.effects}.`;
+            if (ac.kind === 'perfume') {
+                const before = st.wardrobe.history.filter(h => h.accent?.title && h.accent.title.toLowerCase() === ac.title.toLowerCase()).pop();
+                text += before ? ` Этот аромат уже был на ${user}${before.occasion ? ` (${before.occasion})` : ''} — кто-то может вспомнить тот вечер.` : ' Аромат замечают не сразу — когда подходят ближе.';
+            }
+            if (ac.kind === 'stone') text += ' Камень даёт лёгкий флёр атмосферы — едва уловимо, можно списать на совпадение.';
+            if (ac.kind === 'makeup') text += ' Макияж замечают, когда смотрят в лицо, — особенно вблизи и при хорошем свете.';
+            if (ac.kind === 'pocket') text += ` Эта мелочь лежит в сумочке или кармане ${user}: найди в сцене естественный момент, когда она пригодится, выпадет или окажется кстати — не в первой же реплике.`;
+            if (/подар/i.test(ac.origin || '')) text += ' Если даритель рядом, он заметит, что его подарок надет.';
+        }
+        out.push(text + ']');
+    }
+    const equipped = (st.wardrobe.box || []).filter(x => (st.wardrobe.equipped || []).includes(x.id));
+    if (equipped.length) {
+        out.push(`[У ${user} сейчас с собой/наготове: ${equipped.map(x => `«${x.title}»${x.desc ? ` (${x.desc})` : ''}${x.origin ? ` [${x.origin}]` : ''}`).join('; ')}. Персонажи могут обратить на это внимание, а предмет можно пустить в ход.]`);
+    }
+    const aura = auraInjection(st);
+    if (aura) out.push(aura);
+    return out.join('\n');
 }
 
 function wardrobePrompt(st, occasion, exclude = []) {
@@ -1909,7 +2252,9 @@ function wardrobePrompt(st, occasion, exclude = []) {
     const when = [t.date ? `${formatDate(t.date)}, ${season(t.date).name}` : '', placeLine(st)].filter(Boolean).join('; ');
     const recent = st.wardrobe.history.slice(-3).map(h => `«${h.title}»`);
     const avoid = [...exclude.map(x => `«${x}»`), ...recent];
-    return [
+    const images = wantImages();
+    const accents = accentsOn(st);
+    const lines = [
         '[OOC: Пауза в ролевой игре. Сейчас ты НЕ пишешь ответ персонажа. Ты — помощник автора и подбираешь наряд, как в визуальной новелле.',
         `${names.user} собирается: ${occasion || 'в ближайшую сцену, где важен наряд (пойми по чату, куда именно)'}.`,
         when ? `Когда и где: ${when}.` : '',
@@ -1917,25 +2262,861 @@ function wardrobePrompt(st, occasion, exclude = []) {
         avoid.length ? `Не повторяй эти образы: ${avoid.join(', ')}.` : '',
         `Предложи 4 разных образа для ${names.user}: от спокойного до смелого. Учитывай внешность и стиль ${names.user}, погоду, повод и то, кто там будет.`,
         'К каждому образу придумай скрытые последствия — как на него отреагируют конкретные персонажи. Игрок их не увидит, пока сцена не пройдёт. Последствия у всех образов разные: не бывает образа, который нравится всем, и образа, который не нравится никому. Реакции — в характере персонажей и в духе жанра.',
-        'Формат — по две строки на образ, без пояснений:',
-        'LOOK: название образа | что надето, причёска, детали — 1–2 предложения',
-        'EFFECT: Имя (+): как отреагирует; Имя (−): как отреагирует]',
+    ];
+    if (accents) {
+        lines.push(`Ещё предложи 4 штриха к образу — духи, макияж, аксессуар (украшение, сумочка, часы, шарф, заколка и т.п.) и мелочь в сумочке. ${wearableBox(st).length ? `Можно взять вещь из шкатулки ${names.user}: ${boxList(st)} — особенно если она к месту.` : ''}
+— Духи действуют в сцене и через память: аромат замечают вблизи, он о чём-то напоминает, может связаться с этим вечером.
+— Макияж — как ${names.user} выглядит лицом: смелая помада, лёгкие блёстки, стрелки, «почти без макияжа». Меняет то, как на неё смотрят в этой сцене.
+— Аксессуар — деталь, за которую цепляется взгляд и разговор; подарок, надетый при дарителе, тот обязательно заметит.
+— Мелочь в сумочке — то, что можно достать посреди сцены: леденцы, старый билет, блокнот, пластырь, фотография, ключ. Это крючок для сюжета: где-то она пригодится, выпадет или вызовет вопрос.
+У штрихов тоже скрытые последствия, разные по смыслу.`);
+    }
+    if (images) {
+        lines.push('Сначала одной строкой опиши внешность для художника по-английски:');
+        lines.push(`APPEARANCE: внешность ${names.user} по-английски — пол, возраст, волосы, глаза, телосложение, заметные черты`);
+        lines.push('Затем по три строки на образ, без пояснений:');
+        lines.push('LOOK: название образа | что надето, причёска, детали — 1–2 предложения');
+        lines.push('EN: этот же наряд коротко по-английски, только одежда, обувь и причёска');
+    } else {
+        lines.push('Формат — по две строки на образ, без пояснений:');
+        lines.push('LOOK: название образа | что надето, причёска, детали — 1–2 предложения');
+    }
+    lines.push('EFFECT: Имя (+): как отреагирует; Имя (−): как отреагирует');
+    if (accents) {
+        lines.push(images ? 'Затем по три строки на штрих:' : 'Затем по две строки на штрих:');
+        lines.push('ACCENT: духи|макияж|аксессуар|мелочь | название | описание в одном предложении');
+        if (images) lines.push('EN: этот же предмет коротко по-английски для художника: для духов — флакон (perfume bottle); для макияжа — макияж на лице персоны крупным планом (например: close-up beauty portrait of face, natural nose and facial proportions, wearing soft warm eyeshadow and wine-tinted lips, glasses); для аксессуара — украшение или предмет; для мелочи — небольшая вещица');
+        lines.push('EFFECT: последствия — кто как отреагирует; для мелочи — когда и как она всплывёт в сцене');
+    }
+    return lines.filter(Boolean).join('\n') + ']';
+}
+
+// ---------- картинка с образами ----------
+function imageCommand() {
+    const cmds = ctx().SlashCommandParser?.commands;
+    if (!cmds) return '';
+    return cmds.imagine ? 'imagine' : cmds.sd ? 'sd' : '';
+}
+function wantImages() {
+    const s = settings();
+    if (!s.wardrobeImages) return false;
+    if (s.imageSource === 'openai-images') return !!(s.imgApiBase && s.imgApiKey && s.imgApiModel);
+    if (s.imageSource) return !!ctx().ConnectionManagerRequestService?.sendRequest;
+    return !!imageCommand();
+}
+function connectionProfiles() {
+    return ctx().extensionSettings?.connectionManager?.profiles || [];
+}
+
+// Ищем картинку в ответе модели: data-URL или ссылка на картинку
+function extractImage(raw) {
+    const text = typeof raw === 'string' ? raw : JSON.stringify(raw ?? '');
+    let m = text.match(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/i);
+    if (m) return m[0];
+    m = text.match(/https?:\/\/[^\s"'()<>\]\\]+?\.(?:png|jpe?g|webp|gif)(?:\?[^\s"'()<>\]\\]*)?/i);
+    return m ? m[0] : '';
+}
+
+// Сохраняем картинку на сервер Таверны, чтобы не раздувать файл чата
+async function storeImage(url) {
+    if (!url.startsWith('data:')) return url;
+    try {
+        const [, format, data] = url.match(/^data:image\/([a-z0-9.+-]+);base64,(.+)$/i) || [];
+        if (!data) return url;
+        const res = await fetch('/api/images/upload', {
+            method: 'POST',
+            headers: ctx().getRequestHeaders(),
+            body: JSON.stringify({ image: data, format: format.replace('jpeg', 'jpg'), ch_name: 'Гардероб', filename: `wardrobe_${Date.now()}` }),
+        });
+        if (!res.ok) throw new Error(String(res.status));
+        const json = await res.json();
+        return json.path || url;
+    } catch (e) {
+        console.warn('[npc_notebook] upload', e);
+        return url;
+    }
+}
+
+// Аватар персоны как образец лица
+async function fileToDataUrl(file) {
+    if (!file) return '';
+    if (file.startsWith('data:')) return file;
+    try {
+        const res = await fetch(file.startsWith('/') || file.startsWith('http') ? file : '/' + file.split('/').map(encodeURIComponent).join('/'));
+        if (!res.ok) return '';
+        const blob = await res.blob();
+        if (!blob.type.startsWith('image/') || blob.size > 8 * 1024 * 1024) return '';
+        return await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(String(fr.result || '')); fr.onerror = () => r(''); fr.readAsDataURL(blob); });
+    } catch (e) {
+        return '';
+    }
+}
+// Аватары персонажей чата: [{ name, file }]
+function characterAvatars() {
+    const c = ctx();
+    let list = [];
+    try {
+        if (c.groupId && Array.isArray(c.groups)) {
+            const g = c.groups.find(x => x.id === c.groupId);
+            list = (g?.members || []).map(av => c.characters.find(ch => ch.avatar === av)).filter(Boolean);
+        } else if (c.characterId !== undefined && c.characters?.[c.characterId]) {
+            list = [c.characters[c.characterId]];
+        }
+    } catch (e) { list = []; }
+    return list.filter(ch => ch.avatar && ch.avatar !== 'none').map(ch => ({ name: ch.name, file: `characters/${ch.avatar}` }));
+}
+
+async function personaAvatarDataUrl() {
+    try {
+        const chat = ctx().chat || [];
+        let file = '';
+        for (let i = chat.length - 1; i >= 0 && !file; i--) if (chat[i]?.is_user && chat[i].force_avatar) file = chat[i].force_avatar;
+        if (!file) {
+            const id = $('#user_avatar_block .avatar-container.selected').attr('data-avatar-id') || $('#user_avatar_block .selected').attr('imgfile');
+            if (id) file = `User Avatars/${id}`;
+        }
+        if (!file) return '';
+        const res = await fetch(file.startsWith('/') || file.startsWith('http') ? file : '/' + file.split('/').map(encodeURIComponent).join('/'));
+        if (!res.ok) return '';
+        const blob = await res.blob();
+        if (!blob.type.startsWith('image/') || blob.size > 4 * 1024 * 1024) return '';
+        return await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(String(fr.result || '')); fr.onerror = () => r(''); fr.readAsDataURL(blob); });
+    } catch (e) {
+        return '';
+    }
+}
+
+function withTimeout(promise, ms, what) {
+    let t;
+    return Promise.race([
+        promise,
+        new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`${what}: нет ответа ${Math.round(ms / 1000)} сек.`)), ms); }),
+    ]).finally(() => clearTimeout(t));
+}
+function imageSourceName() {
+    const id = settings().imageSource;
+    if (!id) return 'генерацию картинок Таверны';
+    if (id === 'openai-images') return `картинки OpenAI (${settings().imgApiModel})`;
+    const p = connectionProfiles().find(x => x.id === id);
+    return p ? `профиль «${p.name}»` : 'удалённый профиль';
+}
+
+function detectRefusalOrError(raw) {
+    if (!raw) return '';
+    const t = typeof raw === 'string' ? raw : JSON.stringify(raw);
+    if (/safety|content policy|policy violation|violat|censor|inappropriate|nsfw|cannot (fulfill|generate|create)|I am unable to|refuse|sorry|filter/i.test(t)) {
+        return t.slice(0, 300);
+    }
+    if (typeof raw === 'string' && raw.length < 500 && !raw.includes('data:image') && !raw.includes('http')) {
+        return raw.trim();
+    }
+    return '';
+}
+
+// refs: { images: [dataUrl…], note: 'что делать с образцами' } или null
+async function drawViaProfile(basePrompt, refs, profileId) {
+    const svc = ctx().ConnectionManagerRequestService;
+    if (!svc?.sendRequest) throw new Error('в этой версии Таверны нет менеджера подключений');
+    const prompt = basePrompt + '. Generate this image.';
+    const opts = { stream: false, extractData: false, includePreset: false };
+    console.log('[npc_notebook] drawViaProfile: start profileId=' + profileId + ', prompt len=' + prompt.length + ', refs=' + (refs?.images?.length || 0));
+    let raw = null;
+    let refusal = '';
+    if (refs?.images?.length) {
+        try {
+            raw = await withTimeout(svc.sendRequest(profileId, [{ role: 'user', content: [
+                { type: 'text', text: prompt + ' ' + refs.note },
+                ...refs.images.map(url => ({ type: 'image_url', image_url: { url } })),
+            ] }], 8192, opts), 75000, 'рисунок с образцом');
+            if (!extractImage(raw)) {
+                refusal = detectRefusalOrError(raw);
+                console.warn('[npc_notebook] Ref response has no image:', raw);
+                raw = null;
+            }
+        } catch (e) {
+            console.warn('[npc_notebook] image with reference failed, retrying without', e);
+            refusal = e?.message || '';
+            raw = null;
+        }
+        if (!raw) {
+            toastr.info('С образцом лица не вышло — пробую нарисовать без него…', '🎨 Картинка', { timeOut: 4000 });
+        }
+    }
+    if (!raw) {
+        console.log('[npc_notebook] drawViaProfile: requesting without reference...');
+        raw = await withTimeout(svc.sendRequest(profileId, [{ role: 'user', content: prompt }], 8192, opts), 75000, 'рисунок');
+    }
+    const url = extractImage(raw);
+    if (!url) {
+        const refText = detectRefusalOrError(raw) || refusal;
+        console.warn('[npc_notebook] Model response has no image:', raw);
+        if (refText) throw new Error(`Отказ генератора (фильтр/цензура): «${refText}»`);
+        throw new Error('модель ответила без картинки (проверь логи консоли F12)');
+    }
+    console.log('[npc_notebook] Image extracted successfully');
+    return storeImage(url);
+}
+// ---------- картинки через OpenAI-совместимый адрес /images (gpt-image) ----------
+// Браузер может не пустить запрос к чужому сайту (CORS) — тогда пробуем через прокси Таверны.
+async function imagesFetch(url, init) {
+    try {
+        return await fetch(url, init);
+    } catch (e) {
+        const viaProxy = '/proxy/' + url;
+        const res = await fetch(viaProxy, init).catch(() => null);
+        if (!res || res.status === 404) throw new Error('браузер не пустил запрос к сайту картинок. Включи прокси Таверны: в config.yaml поставь enableCorsProxy: true и перезапусти Таверну');
+        return res;
+    }
+}
+function dataUrlToBlob(dataUrl) {
+    const [head, b64] = dataUrl.split(',');
+    const type = (head.match(/data:([^;]+)/) || [])[1] || 'image/png';
+    const bin = atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], { type });
+}
+async function imagesResult(res) {
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch (e) { /* не JSON */ }
+    if (!res.ok) throw new Error(`сайт картинок ответил ${res.status}: ${String(json?.error?.message || text).slice(0, 200)}`);
+    const d = json?.data?.[0];
+    if (d?.b64_json) return `data:image/png;base64,${d.b64_json}`;
+    if (d?.url) return d.url;
+    const any = extractImage(json ?? text);
+    if (any) return any;
+    throw new Error('сайт картинок ответил без картинки');
+}
+async function drawViaImagesApi(prompt, refs, size) {
+    const s = settings();
+    const base = String(s.imgApiBase || '').replace(/\/+$/, '');
+    const auth = { Authorization: `Bearer ${s.imgApiKey}` };
+    console.log('[npc_notebook] drawViaImagesApi: start model=' + s.imgApiModel + ', base=' + base);
+    if (refs?.images?.length) {
+        try {
+            const fd = new FormData();
+            fd.append('model', s.imgApiModel);
+            fd.append('prompt', prompt + '. ' + refs.note);
+            if (refs.images.length === 1) fd.append('image', dataUrlToBlob(refs.images[0]), 'reference.png');
+            else refs.images.forEach((r, i) => fd.append('image[]', dataUrlToBlob(r), `reference${i + 1}.png`));
+            fd.append('n', '1');
+            if (size) fd.append('size', size);
+            const res = await withTimeout(imagesFetch(`${base}/images/edits`, { method: 'POST', headers: auth, body: fd }), 75000, 'рисунок с образцом');
+            return storeImage(await imagesResult(res));
+        } catch (e) {
+            console.warn('[npc_notebook] images/edits failed, retrying without reference', e);
+            toastr.info('С образцом лица не вышло — пробую нарисовать без него…', '🎨 Картинка', { timeOut: 4000 });
+        }
+    }
+    const body = { model: s.imgApiModel, prompt, n: 1 };
+    if (size) body.size = size;
+    const res = await withTimeout(imagesFetch(`${base}/images/generations`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }), 75000, 'рисунок');
+    return storeImage(await imagesResult(res));
+}
+
+function cleanForCommand(t) {
+    return String(t || '').replace(/[|{}\n\r]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function imgOrient() {
+    return settings().imgOrientation === 'landscape' ? 'landscape' : 'portrait';
+}
+function looksLayout(n) {
+    return imgOrient() === 'portrait' && n > 2 ? { rows: 2, cols: 2 } : { rows: 1, cols: n };
+}
+function sheetPrompt(a, layout) {
+    const looks = a.options.slice(0, 4);
+    const who = a.appearance || 'young woman';
+    const common = 'full body, standing, plain light background, the same face, hair and body in every figure, not overlapping';
+    if (layout?.rows === 2) {
+        const pos = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
+        return cleanForCommand(`character outfit sheet arranged as a 2 by 2 grid of equal cells, the same ${who} shown ${looks.length} times, each figure centered in its own cell, ${common}, ` +
+            looks.map((o, i) => `${pos[i]} cell wearing ${o.en || o.title}`).join('; ') + ', no text, no captions');
+    }
+    const pos = ['first', 'second', 'third', 'fourth'];
+    return cleanForCommand(`character outfit sheet, the same ${who} shown ${looks.length} times side by side, each figure centered in its own equal part of the image, ${common}, ` +
+        looks.map((o, i) => `${pos[i]} from the left wearing ${o.en || o.title}`).join('; ') + ', no text, no captions');
+}
+
+// Состояние рисования: отдельно для образов и для штрихов
+const drawingKind = { looks: false, accents: false, gacha: false };
+const drawWaitersOf = { looks: new Set(), accents: new Set(), gacha: new Set() };
+const PIC_FIELDS = { looks: ['image', 'imageFailed'], accents: ['accentImage', 'accentImageFailed'], gacha: ['image', 'imageFailed'] };
+const activeOf = (kind, st = store()) => (kind === 'gacha' ? st?.gacha?.active : st?.wardrobe?.active);
+
+// orient: 'portrait' | 'landscape' — размер для сайта картинок и подсказка в тексте для остальных
+async function drawPicture(prompt, refs, orient = 'landscape') {
+    const src = settings().imageSource;
+    const size = orient === 'portrait' ? '1024x1536' : '1536x1024';
+    if (src === 'openai-images') return drawViaImagesApi(prompt, refs, size);
+    prompt = `${prompt}, ${orient === 'portrait' ? 'vertical portrait image, 2:3' : 'wide landscape image, 3:2'}`;
+    if (src) return drawViaProfile(prompt, refs, src);
+    const c = ctx();
+    const cmd = imageCommand();
+    if (!cmd) throw new Error('генерация картинок не подключена');
+    const run = c.executeSlashCommandsWithOptions || c.executeSlashCommands;
+    if (typeof run !== 'function') throw new Error('эта версия Таверны не умеет запускать команды из расширений');
+    console.log('[npc_notebook] executing slash command: /' + cmd);
+    const r = await withTimeout(Promise.resolve(run(`/${cmd} quiet=true ${prompt}`)), 75000, 'генерация картинок');
+    const url = String(typeof r === 'string' ? r : (r?.pipe ?? '')).trim();
+    if (!url || /\s/.test(url)) {
+        if (url && (url.toLowerCase().includes('error') || url.toLowerCase().includes('fail') || url.toLowerCase().includes('censor'))) {
+            throw new Error(`генератор вернул ошибку: ${url}`);
+        }
+        throw new Error('генератор не вернул картинку');
+    }
+    return url;
+}
+
+// предметы рисуем в том же духе, что и образы: иллюстрация, а не фото
+const ITEM_STYLE = 'semi-realistic anime illustration, soft painterly digital art, clean outlines, warm gentle colors, visual novel item art, not a photo';
+
+function accentsLayout(n) {
+    return n >= 4 ? { rows: 2, cols: 2 } : { rows: 1, cols: n };
+}
+
+function cleanMakeupEn(en, x, who) {
+    const raw = String(en || '').trim();
+    const person = who || 'beautiful young woman';
+    let details = raw;
+    if (!details || details.length < 5) {
+        details = x?.desc || 'subtle elegant makeup';
+    }
+    return `close-up beauty portrait of ${person}, complete face with natural proportions, well-defined nose, eyes and lips, wearing ${details}, soft studio lighting, looking towards camera`;
+}
+
+function accentEnDesc(x, who) {
+    let en = String(x.en || x.title || '').trim();
+    if (x.kind === 'makeup' || /макияж|makeup|lipstick|тени|помад/i.test(x.kind || x.title)) {
+        return cleanMakeupEn(en, x, who);
+    }
+    return en;
+}
+
+function accentsPrompt(a, layout) {
+    const items = (a.accents || []).slice(0, 4);
+    const L = layout || accentsLayout(items.length);
+    const who = a.appearance || 'young woman';
+    if (L.rows === 2) {
+        const pos = ['top-left cell', 'top-right cell', 'bottom-left cell', 'bottom-right cell'];
+        return cleanForCommand(`${ITEM_STYLE}, sheet arranged as a 2 by 2 grid of 4 equal cells, each cell with its own isolated item or portrait, solid plain light cream background, ` +
+            items.map((x, i) => `${pos[i]}: ${accentEnDesc(x, who)}`).join('; ') + ', no text, no captions');
+    }
+    const pos = ['first', 'second', 'third', 'fourth'];
+    return cleanForCommand(`${ITEM_STYLE}, ${items.length} separate elements in a row, wide spacing, each element small and centered with wide empty space around it, solid plain light cream background, ` +
+        items.map((x, i) => `${pos[i]} from the left: ${accentEnDesc(x, who)}`).join('; ') + ', no text, no captions');
+}
+
+
+// Рисует картинку для текущего выбора (kind: looks | accents); onDone получает адрес картинки или ''
+async function ensurePicture(kind, force, onDone) {
+    const st = store();
+    const a = activeOf(kind, st);
+    const [field, failField] = PIC_FIELDS[kind];
+    const okState = kind === 'looks' || kind === 'gacha' ? a?.status === 'choosing' : (a && (a.status === 'choosing' || (a.status === 'worn' && !a.accent)) && (a.accents || []).length);
+    if (!a || !okState || !wantImages()) { onDone?.(a?.[field] || ''); return; }
+    if (onDone) drawWaitersOf[kind].add(onDone);
+    if (drawingKind[kind]) return;
+    if (a[field] && !force) { flushPicture(kind, a[field]); return; }
+    drawingKind[kind] = true;
+    let url = '';
+    try {
+        let refs = null;
+        if ((kind === 'looks' || kind === 'accents') && settings().imageRef) {
+            const me = await personaAvatarDataUrl();
+            if (me) {
+                const note = kind === 'looks'
+                    ? 'The input picture is the reference: keep exactly this character — the same face, hair, eyes and body — and only change the clothes.'
+                    : 'The input picture is the reference for the character face: keep the same face, hair, eyes, nose and facial features recognizable, showing her with the specified makeup in the portrait cell.';
+                refs = { images: [me], note };
+            }
+        }
+        const layout = kind === 'looks' ? looksLayout(Math.min(a.options.length, 4)) : kind === 'accents' ? accentsLayout((a.accents || []).length) : { rows: 1, cols: Math.min(a.options.length, 3) };
+        const orient = (kind === 'looks' || kind === 'accents') && layout.rows === 2 ? 'portrait' : 'landscape';
+        url = await drawPicture(kind === 'looks' ? sheetPrompt(a, layout) : kind === 'gacha' ? gachaPicPrompt(a) : accentsPrompt(a, layout), refs, orient);
+        a[field] = url;
+        a[field + 'Layout'] = layout;
+        a[failField] = false;
+        await ctx().saveMetadata();
+    } catch (err) {
+        a[failField] = true;
+        console.warn('[npc_notebook] image', kind, err);
+        toastr.warning(`Картинку ${kind === 'looks' ? 'с образами' : kind === 'gacha' ? 'с находками' : 'со штрихами'} нарисовать не вышло: ${escapeHtml(err?.message || err)}. Выбирать можно и по названиям.`, kind === 'gacha' ? '🎰 Находки' : '👗 Гардероб', { escapeHtml: false, timeOut: 10000 });
+    } finally {
+        drawingKind[kind] = false;
+        flushPicture(kind, url);
+    }
+    // штрихи рисуем следом за образами, пока игрок выбирает наряд
+    if (kind === 'looks' && url && accentsOn(st) && (a.accents || []).length && !a.accentImage && !a.accentImageFailed) ensurePicture('accents', false);
+}
+function flushPicture(kind, url) {
+    const waiters = [...drawWaitersOf[kind]];
+    drawWaitersOf[kind].clear();
+    waiters.forEach(fn => { try { fn(url); } catch (e) { /* окно уже закрыто */ } });
+}
+
+// ---------- 🎬 Картинка сцены ----------
+function canDrawScene() {
+    const s = settings();
+    if (s.imageSource === 'openai-images') return !!(s.imgApiBase && s.imgApiKey && s.imgApiModel);
+    if (s.imageSource) return !!ctx().ConnectionManagerRequestService?.sendRequest;
+    return !!imageCommand();
+}
+
+function scenePromptRequest(st, mesId) {
+    const names = storyNames();
+    const msg = Number.isInteger(mesId) ? ctx().chat?.[mesId] : null;
+    const moment = msg?.mes ? `Нарисовать нужно момент из этого сообщения (${msg.is_user ? names.user : (msg.name || names.char)}): «${String(msg.mes).replace(/<[^>]+>/g, '').slice(0, 1500)}»` : '';
+    const a = st.wardrobe?.active;
+    const outfit = a?.status === 'worn' ? `${names.user} сейчас одет(а): ${a.look.en || a.look.desc}${a.accent ? `; ${a.accent.title}` : ''}.` : '';
+    const lastAppearance = st.wardrobe?.history?.length ? '' : '';
+    return [
+        '[OOC: Пауза в ролевой игре. Сейчас ты НЕ пишешь ответ персонажа. Ты — помощник художника: опиши картинку того, что происходит в сцене прямо сейчас (по последним сообщениям чата).',
+        moment,
+        st.time?.date ? `Время в истории: ${formatDate(st.time.date)}, ${season(st.time.date).name}${placeLine(st) ? `; место: ${placeLine(st)}` : ''}.` : '',
+        outfit,
+        lastAppearance,
+        'Ответь ровно двумя строками, без пояснений:',
+        `CAST: кто в кадре — имена через запятую, как в чате (${[names.user, ...names.chars, ...(st.npcs || []).slice(0, 8).map(n => n.name)].join(', ')})`,
+        'SCENE: один абзац по-английски для генератора картинок: место и обстановка, время суток и свет, кто в кадре и как выглядит (внешность, одежда), позы, выражения лиц, настроение, ракурс. Это одна иллюстрация, без текста и подписей.]',
     ].filter(Boolean).join('\n');
+}
+
+let sceneDrawing = false;
+async function drawScene(popupEl, mesId) {
+    if (sceneDrawing) return toastr.info('Сцена уже рисуется', '🎬 Сцена');
+    if (!canDrawScene()) return toastr.warning('Не выбрано, чем рисовать: настрой «Чем рисовать» в настройках блокнота.', '🎬 Сцена', { timeOut: 8000 });
+    const st = store();
+    if (!st || !ctx().chat?.length) return toastr.warning('Сначала открой чат', '🎬 Сцена');
+    sceneDrawing = true;
+    const status = popupEl?.find('.nnb-scene-status');
+    const say = t => status?.text(t);
+    try {
+        // 1) описание сцены текстовой моделью
+        let desc = '';
+        let cast = [];
+        const raw = await withBusy('🎬 Модель описывает сцену…', () => quietGenerate(scenePromptRequest(st, mesId)));
+        for (const line of answerLines(raw || '')) {
+            let m = line.match(/^CAST\s*[:：—–-]\s*(.+)$/i);
+            if (m) { cast = m[1].split(/[,;]/).map(x => x.trim().toLowerCase().replace(/ё/g, 'е')).filter(Boolean); continue; }
+            m = line.match(/^SCENE\s*[:：—–-]\s*(.+)$/i);
+            if (m) desc = m[1].trim().replace(/\]$/, '');
+        }
+        if (!desc) throw new Error('модель не описала сцену — попробуй ещё раз');
+        // 2) образцы: аватар персоны и аватары тех, кто в кадре
+        say('🎨 Рисую сцену…');
+        const names = storyNames();
+        const norm = x => String(x || '').toLowerCase().replace(/ё/g, 'е');
+        const inFrame = n => !cast.length || cast.some(c => c.includes(norm(n)) || norm(n).includes(c));
+        const images = [];
+        const who = [];
+        if (settings().imageRef) {
+            if (inFrame(names.user)) {
+                const me = await personaAvatarDataUrl();
+                if (me) { images.push(me); who.push(names.user); }
+            }
+            for (const ch of characterAvatars()) {
+                if (images.length >= 4 || !inFrame(ch.name)) continue;
+                const img = await fileToDataUrl(ch.file);
+                if (img) { images.push(img); who.push(ch.name); }
+            }
+            for (const npc of (st.npcs || [])) {
+                if (images.length >= 4 || !inFrame(npc.name) || !npc.avatar) continue;
+                const img = await fileToDataUrl(npc.avatar);
+                if (img) { images.push(img); who.push(npc.name); }
+            }
+        }
+        const refs = images.length ? { images, note: `The attached pictures are character references, in this order: ${who.map((n, i) => `${i + 1}) ${n}`).join(', ')}. Keep their faces, hair and features recognizable; clothing, pose and setting follow the description.` } : null;
+        const prompt = cleanForCommand(`${desc} Single illustration, no text, no captions.`);
+        console.log('[npc_notebook] drawScene: drawing picture...');
+        const url = await withTimeout(drawPicture(prompt, refs, imgOrient()), 120000, 'рисунок сцены');
+        if (!Array.isArray(st.scenes)) st.scenes = [];
+        st.scenes.push({ url, at: ctx().chat.length, date: st.time?.date || '', desc });
+        if (st.scenes.length > 100) st.scenes.shift();
+        await ctx().saveMetadata();
+        renderPanel();
+        return url;
+    } catch (err) {
+        console.warn('[npc_notebook] scene', err);
+        toastr.warning(`Сцену нарисовать не вышло: ${escapeHtml(err?.message || err)}`, '🎬 Сцена', { escapeHtml: false, timeOut: 10000 });
+        return '';
+    } finally {
+        sceneDrawing = false;
+    }
+}
+
+async function attachToLastMessage(url, mesId) {
+    const c = ctx();
+    for (let i = Number.isInteger(mesId) ? mesId : c.chat.length - 1; i >= 0; i--) {
+        const m = c.chat[i];
+        if (!m || m.is_system) continue;
+        m.extra = m.extra || {};
+        const imgDesc = Object.getOwnPropertyDescriptor(m.extra, 'image');
+        const newApi = Array.isArray(m.extra.media) || (imgDesc && typeof imgDesc.get === 'function') || typeof c.appendMediaToMessage === 'function';
+        if (newApi) {
+            // новые версии таверны: картинки лежат в extra.media, а extra.image только для чтения
+            if (!Array.isArray(m.extra.media)) m.extra.media = [];
+            if (!m.extra.media_display) m.extra.media_display = 'gallery';
+            const prevSceneIdx = m.extra.media.findIndex(x => x.title === 'Сцена' || x.source === 'generated');
+            if (prevSceneIdx >= 0) {
+                m.extra.media[prevSceneIdx] = { url, type: 'image', title: 'Сцена', source: 'generated' };
+                m.extra.media_index = prevSceneIdx;
+            } else {
+                m.extra.media.push({ url, type: 'image', title: 'Сцена', source: 'generated' });
+                m.extra.media_index = m.extra.media.length - 1;
+            }
+        } else {
+            m.extra.image = url;
+            m.extra.title = 'Сцена';
+        }
+        m.extra.inline_image = true; // текст поста остаётся на месте
+        try { if (typeof c.updateMessageBlock === 'function') c.updateMessageBlock(i, m); } catch (e) { /* ignore */ }
+        await c.saveChat();
+        placeMesButtonsSoon();
+        toastr.success('Картинка сцены добавлена в пост. Нажми 🎬 ещё раз, чтобы перерисовать.', '🎬 Сцена', { timeOut: 5000 });
+        return;
+    }
+}
+
+// 🖼 Альбом: сцены и листы образов этого чата
+function albumItems(st) {
+    const items = [];
+    (st.scenes || []).forEach((x, i) => items.push({ kind: 'scene', url: x.url, date: x.date, title: '🎬 Сцена', text: x.desc || '', ref: i }));
+    (st.wardrobe?.history || []).forEach((h, i) => { if (h.image) items.push({ kind: 'look', url: h.image, date: h.date, title: `👗 ${h.title}`, text: h.occasion || '', ref: i }); });
+    return items.reverse();
+}
+async function showAlbumItem(item) {
+    const st = store();
+    const el = $('<div class="nnb-pop nnb-pop-visual"></div>');
+    el.append($('<div class="nnb-album-big"></div>').append($('<img alt="">').attr('src', item.url)));
+    el.append($('<div class="nnb-look-title"></div>').text([item.title, item.date ? formatDate(item.date) : ''].filter(Boolean).join(' · ')));
+    if (item.text) el.append($('<div class="nnb-pop-sub"></div>').text(item.text.length > 300 ? item.text.slice(0, 300) + '…' : item.text));
+    const row = $('<div class="nnb-pop-row nnb-pop-links"></div>');
+    row.append($('<div class="menu_button"><i class="fa-solid fa-up-right-and-down-left-from-center"></i> Во весь экран</div>').on('click', () => window.open(item.url, '_blank')));
+    if (item.kind === 'scene') row.append($('<div class="menu_button"><i class="fa-solid fa-trash"></i> Убрать из альбома</div>').on('click', async () => {
+        if (!confirm('Убрать картинку из альбома? В постах она останется.')) return;
+        st.scenes.splice(item.ref, 1);
+        closePopupOf(el);
+        await commit();
+    }));
+    el.append(row);
+    await openPopup(el, true);
+}
+function renderAlbum(st) {
+    const root = $('#nnb_album_box').empty();
+    const items = albumItems(st);
+    if (!items.length) { root.append('<div class="nnb-empty">Пока пусто: здесь будут картинки сцен (🎬) и листы образов.</div>'); return; }
+    const det = $('<details open class="nnb-section"><summary></summary></details>');
+    det.find('summary').text(`🖼 Альбом (${items.length})`);
+    const grid = $('<div class="nnb-album"></div>');
+    items.forEach(it => grid.append($('<div class="nnb-album-thumb" tabindex="0"></div>').attr('title', it.title).css('background-image', `url("${String(it.url).replace(/"/g, '%22')}")`).on('click', () => showAlbumItem(it))));
+    det.append(grid);
+    root.append(det);
+}
+async function showAlbum() {
+    const st = store();
+    if (!st) return toastr.warning('Сначала открой чат', 'Блокнот рассказчика');
+    const items = albumItems(st);
+    if (!items.length) return toastr.info('Пока пусто: здесь будут картинки сцен (🎬) и листы образов.', '🖼 Альбом');
+    const el = $('<div class="nnb-pop nnb-pop-visual"><h3>🖼 Альбом</h3></div>');
+    const grid = $('<div class="nnb-album"></div>');
+    items.forEach(it => grid.append($('<div class="nnb-album-thumb" tabindex="0"></div>').attr('title', it.title).css('background-image', `url("${String(it.url).replace(/"/g, '%22')}")`).on('click', () => { closePopupOf(el); showAlbumItem(it); })));
+    el.append(grid);
+    await openPopup(el, true);
+}
+
+// 🎬: рисуем в фоне и сразу ставим картинку в пост (тот, на котором нажали, или последний)
+async function showScenePopup(mesId) {
+    if (!Number.isInteger(mesId)) mesId = undefined;
+    if (sceneDrawing) return toastr.info('Сцена уже рисуется — картинка появится в посте сама', '🎬 Сцена');
+    const note = toastr.info('Рисую сцену… Нажми на уведомление, чтобы скрыть.', '🎬 Сцена', { timeOut: 60000, extendedTimeOut: 15000, tapToDismiss: true });
+    let url = '';
+    try {
+        url = await drawScene(null, mesId);
+    } catch (e) {
+        console.error('[npc_notebook] showScenePopup error:', e);
+    } finally {
+        sceneDrawing = false;
+        try { toastr.clear(note); } catch (e) { /* ignore */ }
+    }
+    if (url) await attachToLastMessage(url, mesId);
+}
+
+// Окно выбора открываем, когда картинка уже готова (или не получилась)
+const presentWaiting = { looks: null, accents: null, gacha: null };
+function openWhenReady(kind, openFn) {
+    const a = activeOf(kind);
+    const [field, failField] = PIC_FIELDS[kind];
+    const needsPic = wantImages() && a && (kind !== 'accents' || (a.accents || []).length);
+    if (!needsPic || a[field] || a[failField]) return openFn();
+    if (presentWaiting[kind]) return; // уже ждём — окно откроется само
+    const msg = { looks: 'Рисую образы… Окно выбора откроется само, а пока можно читать чат.', accents: 'Рисую штрихи… Окно откроется само.', gacha: 'Раскладываю находки на прилавке… Окно откроется само.' }[kind];
+    presentWaiting[kind] = toastr.info(msg, kind === 'gacha' ? '🎰 Находки' : '🎨 Гардероб', { timeOut: 0, extendedTimeOut: 0, tapToDismiss: false });
+    ensurePicture(kind, false, () => {
+        try { toastr.clear(presentWaiting[kind]); } catch (e) { /* ignore */ }
+        presentWaiting[kind] = null;
+        openFn();
+    });
+}
+const presentLooks = () => openWhenReady('looks', showWardrobePopup);
+const presentAccents = () => openWhenReady('accents', showAccentPopup);
+
+// Общий визуальный выбор: картинка с зонами, кнопки с названиями, свёрнутые описания
+// Находим на общей картинке, где стоит каждая фигура/предмет: делим на N колонок и в каждой
+// ищем область, заметно отличную от фона. Возвращает [{x,y,w,h}] в долях картинки.
+const cropCache = new Map();
+function smartCrops(url, n, kind, layout) {
+    const rowsN = layout?.rows || 1, colsN = layout?.cols || n;
+    const key = `${url}|${n}|${kind}|${rowsN}x${colsN}`;
+    if (cropCache.has(key)) return cropCache.get(key);
+    if (typeof Image !== 'function') return Promise.resolve([]);
+    const job = new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => {
+            try {
+                const W = 240, H = Math.max(1, Math.round(240 * img.naturalHeight / img.naturalWidth));
+                const cv = document.createElement('canvas');
+                cv.width = W; cv.height = H;
+                const g = cv.getContext('2d', { willReadFrequently: true });
+                g.drawImage(img, 0, 0, W, H);
+                const d = g.getImageData(0, 0, W, H).data;
+                // цвет фона — по углам
+                const px = (x, y) => { const i = (y * W + x) * 4; return [d[i], d[i + 1], d[i + 2]]; };
+                // фон оцениваем построчно по левому и правому краю: у фото он часто плавно меняется сверху вниз
+                const mx = Math.max(1, Math.round(W * 0.03));
+                const rowBg = [];
+                for (let y = 0; y < H; y++) {
+                    const pts = [];
+                    for (let x = mx; x < mx + 4; x++) pts.push(px(x, y));
+                    for (let x = W - mx - 4; x < W - mx; x++) pts.push(px(x, y));
+                    rowBg.push([0, 1, 2].map(k => pts.reduce((s2, c) => s2 + c[k], 0) / pts.length));
+                }
+                const isFg = (x, y) => { const c = px(x, y), b = rowBg[y]; return Math.abs(c[0] - b[0]) + Math.abs(c[1] - b[1]) + Math.abs(c[2] - b[2]) > 70; };
+                const mid = rowBg[Math.floor(H / 2)] || [244, 241, 238];
+                const bg = `rgb(${mid.map(v => Math.round(v)).join(',')})`;
+                // предметы в ряд: художник редко ставит их ровно по третям — ищем каждый предмет по пустым промежуткам
+                if (kind !== 'looks' && rowsN === 1) {
+                    const segs = itemSegments(W, H, isFg, n);
+                    if (segs) { segs.bg = bg; resolve(segs); return; }
+                }
+                const out = [];
+                for (let i = 0; i < n; i++) {
+                    const r = Math.floor(i / colsN), c = i % colsN;
+                    const x0 = Math.floor(c * W / colsN), x1 = Math.floor((c + 1) * W / colsN);
+                    const y0 = Math.floor(r * H / rowsN), y1 = Math.floor((r + 1) * H / rowsN);
+                    const colW = x1 - x0, cellH = y1 - y0;
+                    // плотность «не фона» по строкам и столбцам ячейки — шум и тени не считаем
+                    const rows = new Array(cellH).fill(0), cols = new Array(colW).fill(0);
+                    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) if (isFg(x, y)) { rows[y - y0]++; cols[x - x0]++; }
+                    const rowsOk = rows.map(v => v > colW * 0.04), colsOk = cols.map(v => v > cellH * 0.03);
+                    let minY = rowsOk.indexOf(true), maxY = rowsOk.lastIndexOf(true);
+                    let minX = colsOk.indexOf(true), maxX = colsOk.lastIndexOf(true);
+                    if (minY < 0 || minX < 0) { out.push(null); continue; }
+                    minX += x0; maxX += x0; minY += y0; maxY += y0;
+                    const pad = 0.08;
+                    let w = (maxX - minX) * (1 + pad * 2), h = (maxY - minY) * (1 + pad * 2);
+                    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+                    const target = kind === 'looks' ? (rowsN === 2 ? 2 / 3 : 0.5) : 1;
+                    if (w / h < target) w = Math.min(colW * 0.88, h * target);
+                    if (w / h > target) h = Math.min(cellH * 0.88, w / target);
+                    w = Math.min(w, colW * 0.88); h = Math.min(h, cellH * 0.88);
+                    const safePadX = colW * 0.06, safePadY = cellH * 0.06;
+                    const x = Math.max(x0 + safePadX, Math.min(x1 - safePadX - w, cx - w / 2));
+                    const y = Math.max(y0 + safePadY, Math.min(y1 - safePadY - h, cy - h / 2));
+                    out.push({ x: x / W, y: y / H, w: w / W, h: h / H });
+                }
+                out.bg = bg;
+                resolve(out);
+            } catch (e) {
+                resolve([]); // картинка с другого сайта без разрешения — режем поровну
+            }
+        };
+        img.onerror = () => resolve([]);
+        img.crossOrigin = 'anonymous';
+        img.src = url;
+    });
+    cropCache.set(key, job);
+    return job;
+}
+// Делим полосу с предметами на n кусков по пустым промежуткам между ними; null — если не вышло
+function itemSegments(W, H, isFg, n) {
+    const colCnt = new Array(W).fill(0);
+    for (let x = 0; x < W; x++) for (let y = 0; y < H; y++) if (isFg(x, y)) colCnt[x]++;
+    const peak = Math.max(...colCnt);
+    const on = colCnt.map(v => v > Math.max(H * 0.015, peak * 0.08)); // фон с виньеткой тоже даёт немного «не фона» — считаем от самого плотного столбца
+    let runs = [];
+    for (let x = 0; x < W; x++) {
+        if (!on[x]) continue;
+        const last = runs[runs.length - 1];
+        if (last && x - last.x1 <= Math.max(2, W * 0.015)) last.x1 = x; else runs.push({ x0: x, x1: x });
+    }
+    runs.forEach(r => { r.mass = colCnt.slice(r.x0, r.x1 + 1).reduce((a, b) => a + b, 0); });
+    runs = runs.filter(r => r.mass > H * 2); // соринки и тени не считаем
+    if (!runs.length) return null;
+    // предметы слиплись — режем самый широкий кусок по самому «пустому» месту в его середине
+    while (runs.length < n) {
+        const wi = runs.reduce((b, r, i) => (r.x1 - r.x0 > runs[b].x1 - runs[b].x0 ? i : b), 0);
+        const r = runs[wi];
+        if (r.x1 - r.x0 < W * 0.12) return null;
+        const a0 = Math.round(r.x0 + (r.x1 - r.x0) * 0.2), a1 = Math.round(r.x1 - (r.x1 - r.x0) * 0.2);
+        let cut = a0;
+        for (let x = a0; x <= a1; x++) if (colCnt[x] < colCnt[cut]) cut = x;
+        const m = (x0, x1) => colCnt.slice(x0, x1 + 1).reduce((a, b) => a + b, 0);
+        runs.splice(wi, 1, { x0: r.x0, x1: cut - 1, mass: m(r.x0, cut - 1) }, { x0: cut + 1, x1: r.x1, mass: m(cut + 1, r.x1) });
+    }
+    // если кусков больше — склеиваем ближайшие соседние, пока не останется n
+    while (runs.length > n) {
+        let best = 0, gap = Infinity;
+        for (let i = 0; i < runs.length - 1; i++) { const g = runs[i + 1].x0 - runs[i].x1; if (g < gap) { gap = g; best = i; } }
+        const a = runs[best], b = runs[best + 1];
+        runs.splice(best, 2, { x0: a.x0, x1: b.x1, mass: a.mass + b.mass });
+    }
+    const out = [];
+    for (let i = 0; i < n; i++) {
+        const r = runs[i];
+        const left = i ? Math.ceil((runs[i - 1].x1 + r.x0) / 2) : 0;
+        const right = i < n - 1 ? Math.floor((r.x1 + runs[i + 1].x0) / 2) : W - 1;
+        let minY = H, maxY = -1;
+        for (let y = 0; y < H; y++) {
+            let c = 0;
+            for (let x = r.x0; x <= r.x1; x++) if (isFg(x, y)) c++;
+            if (c > (r.x1 - r.x0 + 1) * 0.04) { if (y < minY) minY = y; maxY = y; }
+        }
+        if (maxY < 0) return null;
+        const cx = (r.x0 + r.x1) / 2, cy = (minY + maxY) / 2;
+        const padX = Math.round((right - left) * 0.06);
+        const safeLeft = left + padX, safeRight = right - padX;
+        const h = Math.min(H * 0.9, Math.max(r.x1 - r.x0, maxY - minY) * 1.2);
+        const w = Math.min(safeRight - safeLeft, Math.max(h, (r.x1 - r.x0) * 1.15));
+        const x = Math.max(safeLeft, Math.min(safeRight - w, cx - w / 2));
+        const y = Math.max(0, Math.min(H - h, cy - h / 2));
+        out.push({ x: x / W, y: y / H, w: w / W, h: h / H });
+    }
+    return out;
+}
+
+function applyCrop(el, url, box, imgRatio) {
+    if (el.hasClass('nnb-card-img')) {
+        let inner = el.children('.nnb-card-crop');
+        if (!inner.length) inner = $('<div class="nnb-card-crop"></div>').appendTo(el);
+        el = inner;
+    }
+    const bw = Math.max(0.01, Math.min(1, box.w));
+    const bh = Math.max(0.01, Math.min(1, box.h));
+    const posX = bw >= 1 ? 50 : Math.max(0, Math.min(1, box.x / (1 - bw))) * 100;
+    const posY = bh >= 1 ? 50 : Math.max(0, Math.min(1, box.y / (1 - bh))) * 100;
+    el.css({
+        'background-image': `url("${String(url).replace(/"/g, '%22')}")`,
+        'background-size': `${100 / bw}% ${100 / bh}%`,
+        'background-position': `${posX}% ${posY}%`,
+        'aspect-ratio': `${(bw * imgRatio) / bh}`,
+    });
+}
+
+// Общая картинка нарезается на карточки: в каждой своя фигура или предмет и название
+function visualPicker({ kind, items, title, label, onPick, field, failField, a, cardClass }) {
+    const box = $('<div class="nnb-visual"></div>');
+    const n = Math.min(items.length, kind === 'gacha' ? 3 : 4);
+    const layoutOf = () => a[field + 'Layout'] || (kind === 'accents' ? accentsLayout(n) : { rows: 1, cols: n });
+    const cell = i => {
+        const L = layoutOf();
+        const r = Math.floor(i / L.cols), c = i % L.cols;
+        const colW = 1 / L.cols, rowH = 1 / L.rows;
+        const padX = colW * 0.08, padY = rowH * 0.08;
+        return {
+            x: c * colW + padX,
+            y: r * rowH + padY,
+            w: colW - padX * 2,
+            h: rowH - padY * 2
+        };
+    };
+    const render = url => {
+        box.empty();
+        const head = $('<div class="nnb-visual-tools"></div>');
+        const redraw = $('<div class="nnb-icon-btn fa-solid fa-palette" title="Перерисовать" tabindex="0"></div>').on('click', () => { wait(); ensurePicture(kind, !drawingKind[kind], render); });
+        head.append(redraw);
+        if (url) head.append($('<div class="nnb-icon-btn fa-solid fa-up-right-and-down-left-from-center" title="Во весь экран" tabindex="0"></div>').on('click', () => window.open(url, '_blank')));
+        box.append(head);
+        const grid = $(`<div class="nnb-cards nnb-cards-${kind}${url ? ' nnb-carousel' : ' nnb-cards-text'}${layoutOf().rows === 2 ? ' nnb-grid22' : ''}"></div>`);
+        const imgs = [];
+        items.forEach((it, i) => {
+            const card = $('<div class="nnb-card-pick" tabindex="0"><div class="nnb-card-body"><div class="nnb-card-kind"></div><div class="nnb-card-title"></div></div></div>');
+            if (cardClass) card.addClass(cardClass(it));
+            if (url && i < n) {
+                const img = $('<div class="nnb-card-img"></div>');
+                // пока ищем фигуру — режем поровну
+                applyCrop(img, url, cell(i), layoutOf().rows === 2 ? 2 / 3 : 1.5);
+                card.prepend(img);
+                imgs.push(img);
+            }
+            const kindText = label ? label(it) : '';
+            if (kindText) card.find('.nnb-card-kind').text(kindText); else card.find('.nnb-card-kind').remove();
+            card.find('.nnb-card-title').text(title(it));
+            if (it.desc) card.find('.nnb-card-body').append($('<div class="nnb-card-desc"></div>').text(it.desc));
+            card.on('click', () => onPick(i));
+            grid.append(card);
+        });
+        box.append(grid);
+        // карусель: по одной карточке на экран, листаем пальцем; точки внизу показывают, где мы
+        if (url && items.length > 1) {
+            const dots = $('<div class="nnb-dots"></div>');
+            items.forEach((_, i) => dots.append($('<span tabindex="0"></span>').on('click', () => { const el = grid[0]; el.scrollTo?.({ left: i * el.clientWidth, behavior: 'smooth' }); })));
+            const mark = () => { const el = grid[0]; const i = el.clientWidth ? Math.round(el.scrollLeft / el.clientWidth) : 0; dots.children().each((j, d) => $(d).toggleClass('active', j === i)); };
+            grid.on('scroll', mark);
+            mark();
+            box.append(dots);
+        }
+        if (url && imgs.length && typeof Image === 'function') {
+            const probe = new Image();
+            probe.onload = async () => {
+                const ratio = probe.naturalWidth / probe.naturalHeight || 1.5;
+                const crops = await smartCrops(url, n, kind, layoutOf());
+                imgs.forEach((el, i) => { applyCrop(el, url, crops[i] || cell(i), ratio); if (crops.bg) el.css('background-color', crops.bg); });
+            };
+            probe.src = url;
+        }
+    };
+    const wait = () => box.html('').append($('<div class="nnb-pop-sub nnb-wait"></div>').text(`🎨 Рисую через ${imageSourceName()}… обычно до пары минут`));
+    if (a[field]) render(a[field]);
+    else if (a[failField] && !drawingKind[kind]) render('');
+    else { wait(); ensurePicture(kind, false, render); }
+    return box;
 }
 
 function parseLooks(raw) {
     const looks = [];
+    const accents = [];
+    let appearance = '';
+    let last = null;
     for (const line of answerLines(raw)) {
-        let m = line.match(/^LOOK\s*\d*\s*[:：—–-]\s*(.+)$/i);
+        let m = line.match(/^APPEARANCE\s*[:：—–-]\s*(.+)$/i);
+        if (m) { appearance = m[1].trim(); continue; }
+        m = line.match(/^EN\s*[:：—–-]\s*(.+)$/i);
+        if (m) { if (last) last.en = m[1].trim().replace(/\]$/, ''); continue; }
+        m = line.match(/^LOOK\s*\d*\s*[:：—–-]\s*(.+)$/i);
         if (m) {
             const [title, ...rest] = m[1].split('|');
-            looks.push({ title: title.trim().replace(/^[«"]|[»"]$/g, ''), desc: rest.join('|').trim(), effects: '' });
+            last = { title: title.trim().replace(/^[«"]|[»"]$/g, ''), desc: rest.join('|').trim(), effects: '' };
+            looks.push(last);
+            continue;
+        }
+        m = line.match(/^ACCENT\s*\d*\s*[:：—–-]\s*(.+)$/i);
+        if (m) {
+            const parts = m[1].split('|').map(x => x.trim());
+            const kind = accentKind(parts[0]);
+            const title = (parts.length >= 3 ? parts[1] : parts[0]).replace(/^[«"]|[»"]$/g, '');
+            const desc = parts.length >= 3 ? parts.slice(2).join(' | ') : (parts[1] || '');
+            last = { kind, title, desc: desc.replace(/\]$/, ''), effects: '' };
+            if (title) accents.push(last);
             continue;
         }
         m = line.match(/^EFFECTS?\s*[:：—–-]\s*(.+)$/i);
-        if (m && looks.length) looks[looks.length - 1].effects = m[1].trim().replace(/\]$/, '');
+        if (m && last) last.effects = m[1].trim().replace(/\]$/, '');
     }
-    return looks.filter(l => l.title);
+    const out = looks.filter(l => l.title);
+    out.appearance = appearance;
+    out.accents = accents;
+    return out;
 }
 
 async function generateOutfits(st, occasion, exclude = []) {
@@ -1946,20 +3127,20 @@ async function generateOutfits(st, occasion, exclude = []) {
         toastr.warning('Модель не предложила образы по формату — загляни в «Последний ответ модели»', 'Блокнот рассказчика');
         return false;
     }
-    st.wardrobe.active = { occasion: occasion || '', options: looks.slice(0, 5), status: 'choosing', at: ctx().chat.length, date: st.time.date || '' };
+    st.wardrobe.active = { occasion: occasion || '', options: looks.slice(0, wantImages() ? 4 : 5), appearance: looks.appearance, accents: looks.accents || [], status: 'choosing', at: ctx().chat.length, date: st.time.date || '' };
     return true;
 }
 
 async function startWardrobe() {
     const st = store();
     if (!st) return toastr.warning('Сначала открой чат', 'Блокнот рассказчика');
-    if (st.wardrobe.active?.status === 'choosing') return showWardrobePopup();
+    if (st.wardrobe.active?.status === 'choosing') return presentLooks();
     if (st.wardrobe.active?.status === 'worn' && !confirm(`Сейчас выбран образ «${st.wardrobe.active.look.title}». Подобрать новый? Последствия старого так и останутся нераскрытыми.`)) return;
     const occasion = await askText('Куда собирается твой персонаж? Оставь пустым — модель поймёт по сцене.');
     if (occasion === null) return;
     st.wardrobe.active = null;
     const ok = await withBusy('👗 Модель подбирает образы…', s2 => generateOutfits(s2, occasion.trim()));
-    if (ok) showWardrobePopup();
+    if (ok) presentLooks();
 }
 
 async function rerollOutfits() {
@@ -1969,7 +3150,7 @@ async function rerollOutfits() {
     const exclude = a.options.map(o => o.title);
     const occasion = a.occasion;
     const ok = await withBusy('👗 Модель подбирает другие образы…', s2 => generateOutfits(s2, occasion, exclude));
-    if (ok) showWardrobePopup();
+    if (ok) presentLooks();
 }
 
 async function chooseOutfit(i, customText) {
@@ -1979,7 +3160,271 @@ async function chooseOutfit(i, customText) {
     a.look = customText ? { title: 'Свой образ', desc: customText, effects: '', custom: true } : a.options[i];
     a.status = 'worn';
     await commit();
+    if (accentsOn(st) && ((a.accents || []).length || wearableBox(st).length)) {
+        presentAccents();
+        return;
+    }
     toastr.success(`Выбран образ «${escapeHtml(a.look.title)}». Последствия узнаешь по ходу сцены.`, '👗 Гардероб', { escapeHtml: false });
+    await checkPendingTravel();
+}
+
+async function chooseAccent(accent) {
+    const st = store();
+    const a = st?.wardrobe.active;
+    if (!a || a.status !== 'worn') return;
+    a.accent = accent || null;
+    await commit();
+    toastr.success(`Образ «${escapeHtml(a.look.title)}»${accent ? ` + ${escapeHtml(accent.title)}` : ''}. Последствия узнаешь по ходу сцены.`, '👗 Гардероб', { escapeHtml: false });
+    await checkPendingTravel();
+}
+
+async function showAccentPopup() {
+    const st = store();
+    const a = st?.wardrobe.active;
+    if (!a || a.status !== 'worn') return;
+    const accents = a.accents || [];
+    const visual = wantImages() && accents.length > 0;
+    const el = $(`<div class="nnb-pop${visual ? ' nnb-pop-visual' : ''}"><h3>✨ Добавить штрих?</h3></div>`);
+    el.append($('<div class="nnb-pop-sub"></div>').text(`К образу «${a.look.title}»`));
+    const icon = k => (ACCENT_KINDS[k] || ACCENT_KINDS.accessory).icon;
+    const pickAccent = async i => { closePopupOf(el); await chooseAccent(accents[i]); };
+    const card = (title, desc, sub, fn) => {
+        const c = $('<div class="nnb-look" tabindex="0"><div class="nnb-look-title"></div><div class="nnb-look-desc"></div></div>');
+        c.find('.nnb-look-title').text(title);
+        c.find('.nnb-look-desc').text([desc, sub].filter(Boolean).join(' · '));
+        c.on('click', async () => { closePopupOf(el); await fn(); });
+        return c;
+    };
+    if (visual) {
+        el.append(visualPicker({ kind: 'accents', items: accents, title: x => x.title, label: x => (ACCENT_KINDS[x.kind] || ACCENT_KINDS.accessory).name, onPick: pickAccent, field: 'accentImage', failField: 'accentImageFailed', a }));
+    } else {
+        accents.forEach((ac, i) => el.append(card(`${icon(ac.kind)} ${ac.title}`, ac.desc, '', () => chooseAccent(accents[i]))));
+    }
+    const fresh = wearableBox(st).filter(x => !accents.some(ac => ac.title.toLowerCase() === x.title.toLowerCase()));
+    if (fresh.length) {
+        el.append('<div class="nnb-pop-sub nnb-box-head">🎁 Из шкатулки</div>');
+        const boxRow = $('<div class="nnb-chips-row"></div>');
+        fresh.forEach(x => boxRow.append($('<div class="menu_button nnb-look-chip" tabindex="0"></div>').text(`${icon(x.kind)} ${x.title}`).attr('title', x.origin || '')
+            .on('click', async () => { closePopupOf(el); await chooseAccent({ kind: x.kind === 'find' ? 'pocket' : x.kind, title: x.title, desc: x.desc, origin: x.origin, effects: '', fromBox: true }); })));
+        el.append(boxRow);
+    }
+    const none = $('<div class="menu_button"><i class="fa-solid fa-xmark"></i> Без штриха</div>');
+    none.on('click', async () => { closePopupOf(el); await chooseAccent(null); });
+    el.append($(`<div class="nnb-pop-row${visual ? ' nnb-pop-links' : ''}"></div>`).append(none));
+    if (!(await openPopup(el, visual))) await chooseAccent(null);
+    if (st?.map?.pendingTravel) await chooseAccent(null);
+}
+
+// ---------- 🎰 Находки (гача) ----------
+const RARITIES = [
+    { id: 'common', name: 'Обычная', icon: '⚪', stars: '★', w: 60, hint: 'милая простая вещица; в сцене — лёгкий приятный момент, повод улыбнуться' },
+    { id: 'rare', name: 'Редкая', icon: '🔵', stars: '★★', w: 28, hint: 'вещь со своей историей: необычная деталь, надпись, след прежнего владельца — за неё цепляется разговор' },
+    { id: 'epic', name: 'Эпическая', icon: '🟣', stars: '★★★', w: 10, hint: 'вещь связана с кем-то из героев или их прошлым — её узнают, она заметно меняет настроение сцены' },
+    { id: 'legendary', name: 'Легендарная', icon: '🟡', stars: '★★★★', w: 2, hint: 'вещь с тайной: открывает новую сюжетную линию, загадку или поворот, о котором ещё никто не знает' },
+];
+const GACHA_PITY = 10;          // столько прокруток без эпической — и следующая гарантирована
+const GACHA_LIMIT = 3;          // прокруток на один пост
+const rarityOf = id => RARITIES.find(r => r.id === id) || RARITIES[0];
+function rollRarity() {
+    let x = Math.random() * RARITIES.reduce((a, r) => a + r.w, 0);
+    for (const r of RARITIES) { if ((x -= r.w) < 0) return r.id; }
+    return 'common';
+}
+// три редкости на прокрутку; гарант считает прокрутки без эпической и выше
+function rollGacha(g) {
+    const out = [rollRarity(), rollRarity(), rollRarity()];
+    const high = id => id === 'epic' || id === 'legendary';
+    if (!out.some(high) && (g.pity || 0) + 1 >= GACHA_PITY) out[Math.floor(Math.random() * 3)] = 'epic';
+    g.pity = out.some(high) ? 0 : (g.pity || 0) + 1;
+    return out;
+}
+function gachaOn(st) {
+    return !!st?.direction?.gacha;
+}
+function gachaSpinsLeft(st) {
+    const len = ctx().chat?.length ?? 0;
+    st.gacha.spins = st.gacha.spins.filter(at => at === len); // с новым постом счёт начинается заново
+    return Math.max(0, GACHA_LIMIT - st.gacha.spins.length);
+}
+
+function gachaPrompt(st, rarities, hint) {
+    const names = storyNames();
+    const t = st.time;
+    const when = [t.date ? `${formatDate(t.date)}, ${season(t.date).name}` : '', placeLine(st)].filter(Boolean).join('; ');
+    const owned = st.wardrobe.box.slice(-12).map(x => x.title);
+    const images = wantImages();
+    const lines = [
+        '[OOC: Пауза в ролевой игре. Сейчас ты НЕ пишешь ответ персонажа. Ты — помощник автора и устраиваешь «гачу»: игрок испытывает удачу и получает три находки на выбор.',
+        hint ? `Где это происходит: ${hint}.` : `Пойми по последним сообщениям чата, где сейчас ${names.user}: блошиный рынок, лоток с винтажем, антикварная лавка, капсульный автомат, лотерея на ярмарке, коробка на чердаке и т.п. Находки должны быть именно оттуда. Если подходящего места в сцене нет — придумай уместный повод рядом (уличный торговец, автомат у входа, коробка «отдам даром»).`,
+        when ? `Когда и где: ${when}. Цену пиши в местной валюте и в духе этого места.` : 'Цену пиши в валюте, уместной для этого мира.',
+        buildDirection(st),
+        owned.length ? `У ${names.user} уже есть: ${owned.join(', ')} — не повторяй.` : '',
+        'Редкость каждой находки уже выпала, придумай предметы строго под неё, в этом порядке:',
+        ...rarities.map((r, i) => `${i + 1}) ${rarityOf(r).name.toUpperCase()} — ${rarityOf(r).hint}`),
+        `Все три предмета разные. У каждого — «крючок»: что произойдёт в следующей сцене, если ${names.user} возьмёт именно его (кто заметит, что вспомнится, что откроется). Крючок — для автора, игрок его не видит. Персонажи и тайны — только из этой истории.`,
+        'Формат, без пояснений:',
+        'PLACE: короткое название места или лотка',
+        `Затем по ${images ? 'две строки' : 'одной строке'} на находку:`,
+        'ITEM: название | как выглядит — одно предложение | цена | крючок',
+    ];
+    if (images) lines.push('EN: этот же предмет коротко по-английски, только как он выглядит');
+    return lines.filter(Boolean).join('\n') + ']';
+}
+function parseGacha(raw, rarities) {
+    const text = String(raw || '').replace(/\*\*/g, '');
+    const place = (text.match(/^\s*PLACE\s*:\s*(.+)$/im) || [])[1]?.trim() || '';
+    const items = [];
+    for (const line of text.split(/\r?\n/)) {
+        let m = line.match(/^\s*ITEM\s*:\s*(.+)$/i);
+        if (m) {
+            const [title, desc, price, ...hook] = m[1].split('|').map(x => x.trim());
+            if (title) items.push({ title: title.replace(/^[«"]|[»"]$/g, ''), desc: desc || '', price: price || '', hook: hook.join(' | '), en: '' });
+            continue;
+        }
+        m = line.match(/^\s*EN\s*:\s*(.+)$/i);
+        if (m && items.length) items[items.length - 1].en = m[1].trim();
+    }
+    items.slice(0, 3).forEach((it, i) => { it.rarity = rarities[i] || 'common'; });
+    return { place, items: items.slice(0, 3) };
+}
+function gachaPicPrompt(a) {
+    const pos = ['first', 'second', 'third'];
+    return cleanForCommand(`${ITEM_STYLE}, ${a.options.length} separate vintage finds in a row, evenly spaced, each item small and centered in its own third of the image with wide empty space between items, nothing overlapping, plain light cream background, ` +
+        a.options.map((x, i) => `${pos[i]} from the left: ${x.en || x.title}`).join('; ') + ', no people, no hands, no text, no captions');
+}
+
+async function startGacha(hintArg) {
+    const st = store();
+    if (!st) return toastr.warning('Сначала открой чат', 'Блокнот рассказчика');
+    if (!gachaOn(st)) return toastr.info('Находки выключены в этом чате — включи их в блокноте, вкладка «Сюжет»', '🎰 Находки');
+    if (st.gacha.active?.status === 'choosing') return presentGacha();
+    if (!gachaSpinsLeft(st)) return toastr.info(`На этом посте удачу уже испытывали ${GACHA_LIMIT} раза. Снова можно будет со следующим постом.`, '🎰 Находки');
+    const hint = typeof hintArg === 'string' ? hintArg : '';
+    const rarities = rollGacha(st.gacha);
+    const ok = await withBusy('🎰 Крутим удачу…', async s2 => {
+        const raw = await quietGenerate(gachaPrompt(s2, rarities, hint));
+        s2.lastRaw = String(raw ?? '');
+        const { place, items } = parseGacha(raw, rarities);
+        if (items.length < 2) {
+            toastr.warning('Модель не выложила находки по формату — загляни в «Последний ответ модели»', '🎰 Находки');
+            return false;
+        }
+        s2.gacha.spins.push(ctx().chat.length);
+        s2.gacha.total = (s2.gacha.total || 0) + 1;
+        s2.gacha.stats = s2.gacha.stats || {};
+        rarities.forEach(r => { s2.gacha.stats[r] = (s2.gacha.stats[r] || 0) + 1; });
+        s2.gacha.active = { place, options: items, status: 'choosing', at: ctx().chat.length, date: s2.time.date || '' };
+        return true;
+    });
+    if (ok) presentGacha();
+}
+const presentGacha = () => openWhenReady('gacha', showGachaPopup);
+
+async function showGachaPopup() {
+    const st = store();
+    const a = st?.gacha.active;
+    if (!a || a.status !== 'choosing') return;
+    const visual = wantImages();
+    const el = $(`<div class="nnb-pop${visual ? ' nnb-pop-visual' : ''}"><h3></h3></div>`);
+    el.find('h3').text(`🎰 ${a.place || 'Находки'}`);
+    el.append($('<div class="nnb-pop-sub"></div>').text('Бери, что приглянулось, — можно несколько. Остальное уйдёт другим.'));
+    const pick = async i => {
+        if (a.options[i]?.taken) return;
+        await chooseFind(i);
+        el.find('.nnb-card-pick').eq(i).addClass('nnb-taken');
+        leave.html('<i class="fa-solid fa-check"></i> Готово');
+        if (a.options.every(o => o.taken)) closePopupOf(el);
+    };
+    const label = x => `${rarityOf(x.rarity).stars} ${rarityOf(x.rarity).name}${x.price ? ` · ${x.price}` : ''}`;
+    if (visual) {
+        el.append(visualPicker({ kind: 'gacha', items: a.options, title: x => x.title, label, onPick: pick, field: 'image', failField: 'imageFailed', a, cardClass: x => `nnb-rar nnb-rar-${x.rarity}${x.taken ? ' nnb-taken' : ''}` }));
+    } else {
+        const grid = $('<div class="nnb-cards nnb-cards-text"></div>');
+        a.options.forEach((x, i) => {
+            const card = $(`<div class="nnb-card-pick nnb-rar nnb-rar-${x.rarity}${x.taken ? ' nnb-taken' : ''}" tabindex="0"><div class="nnb-card-body"><div class="nnb-card-kind"></div><div class="nnb-card-title"></div><div class="nnb-card-desc"></div></div></div>`);
+            card.find('.nnb-card-kind').text(label(x));
+            card.find('.nnb-card-title').text(x.title);
+            card.find('.nnb-card-desc').text(x.desc);
+            card.on('click', () => pick(i));
+            grid.append(card);
+        });
+        el.append(grid);
+    }
+    const anyTaken = () => a.options.some(o => o.taken);
+    const leave = $('<div class="menu_button"></div>').html(anyTaken() ? '<i class="fa-solid fa-check"></i> Готово' : '<i class="fa-solid fa-person-walking-arrow-right"></i> Уйти ни с чем').on('click', async () => {
+        closePopupOf(el);
+        if (!anyTaken()) { st.gacha.active = null; await commit(); }
+    });
+    el.append($(`<div class="nnb-pop-row${visual ? ' nnb-pop-links' : ''}"></div>`).append(leave));
+    await openPopup(el, visual);
+    // что-то взяли — прилавок закрывается; ничего — можно вернуться к нему из шкатулки
+    if (anyTaken() && st.gacha.active === a) await finishGacha();
+}
+
+async function finishGacha() {
+    const st = store();
+    const a = st?.gacha.active;
+    if (!a) return;
+    const left = a.options.filter(o => !o.taken).map(o => o.title);
+    (Array.isArray(st.gacha.pending) ? st.gacha.pending : []).forEach(p => { if (p.spin === a.spin) p.others = left; });
+    st.gacha.active = null;
+    await commit();
+}
+
+async function chooseFind(i) {
+    const st = store();
+    const a = st?.gacha.active;
+    const x = a?.options[i];
+    if (!x) return;
+    if (!a.spin) a.spin = Date.now();
+    x.taken = true;
+    const others = a.options.filter(o => !o.taken).map(o => o.title);
+    let crop = null;
+    if (a.image) {
+        try {
+            const crops = await smartCrops(a.image, a.options.length, 'gacha', a.imageLayout);
+            crop = crops[i] || null;
+        } catch (e) { /* режем поровну */ }
+        if (!crop) { const n = a.imageLayout?.cols || a.options.length; crop = { x: i / n, y: 0, w: 1 / n, h: 1 }; }
+    }
+    const where = [a.place, a.date ? formatDate(a.date) : ''].filter(Boolean).join(', ');
+    st.wardrobe.box.push({
+        id: st.wardrobe.nextItemId++, kind: findKind(x.title), title: x.title, desc: x.desc, origin: where ? `находка: ${where}` : 'находка',
+        rarity: x.rarity, hook: x.hook, price: x.price, image: a.image || '', crop, at: ctx().chat.length,
+    });
+    const len = ctx().chat.length;
+    const prev = Array.isArray(st.gacha.pending) ? st.gacha.pending.filter(p => p.at === len) : [];
+    st.gacha.pending = [...prev, { title: x.title, desc: x.desc, hook: x.hook, rarity: x.rarity, place: a.place, price: x.price, others, at: len, spin: a.spin }];
+    // легендарная находка открывает тайну
+    if (x.rarity === 'legendary' && st.direction.intrigues && x.hook) {
+        st.intrigues.push({ id: st.nextIntrigueId++, tag: 'находка', text: `${x.title}: ${x.hook}`, clues: [], at: ctx().chat.length });
+    }
+    await commit();
+    const r = rarityOf(x.rarity);
+    toastr.success(`${r.icon} ${escapeHtml(r.name)}: «${escapeHtml(x.title)}» — в шкатулке.`, '🎰 Находки', { escapeHtml: false, timeOut: 7000 });
+}
+
+function gachaInjection(st) {
+    let list = st?.gacha?.pending;
+    if (!list || !gachaOn(st)) return '';
+    if (!Array.isArray(list)) list = [list];
+    if (!list.length) return '';
+    const names = storyNames();
+    const one = p => {
+        const r = rarityOf(p.rarity);
+        return `${p.price ? `купил(а) за ${p.price}` : 'взял(а)'}${p.place ? ` (${p.place})` : ''} ${r.name.toLowerCase().replace(/ая$/, 'ую')} находку — «${p.title}»${p.desc ? `: ${p.desc}` : ''}.${p.hook ? ` Как её обыграть: ${p.hook}.` : ''}${p.others?.length && !list.some(q => q !== p && q.spin && q.spin === p.spin && list.indexOf(q) > list.indexOf(p)) ? ` Остальное (${p.others.join(', ')}) осталось на прилавке или досталось другим.` : ''}`;
+    };
+    const body = list.length === 1 ? `${names.user} только что ${one(list[0])}` : `${names.user} только что сделал(а) несколько находок:\n${list.map((p, i) => `${i + 1}) ${one(p)}`).join('\n')}`;
+    return `[Находка: ${body}\nВ СЛЕДУЮЩЕМ ответе обязательно обыграй ${list.length === 1 ? 'её' : 'их'}. Чем реже находка, тем заметнее её след в сюжете.]`;
+}
+function clearGachaPending() {
+    const st = store();
+    if (!st?.gacha?.pending) return;
+    const list = Array.isArray(st.gacha.pending) ? st.gacha.pending : [st.gacha.pending];
+    const last = ctx().chat?.[ctx().chat.length - 1];
+    if (!last || last.is_user || ctx().chat.length <= Math.max(...list.map(p => p.at))) return;
+    st.gacha.pending = null;
+    ctx().saveMetadata();
 }
 
 function revealPrompt(st) {
@@ -1990,6 +3435,7 @@ function revealPrompt(st) {
         '[OOC: Пауза в ролевой игре. Сейчас ты НЕ пишешь ответ персонажа. Ты — помощник автора.',
         `${names.user} выбрал(а) наряд «${a.look.title}» — ${a.look.desc}${a.occasion ? ` (для: ${a.occasion})` : ''}.`,
         a.look.effects ? `Задуманные последствия: ${a.look.effects}.` : '',
+        a.accent ? `Штрих к образу: ${a.accent.title}${a.accent.effects ? ` (задумано: ${a.accent.effects})` : ''}.` : '',
         'Перечитай чат: как этот выбор на самом деле сыграл в сцене?' + arcs,
         'Ответь строками, без пояснений:',
         'RESULT: итог в 1–2 предложениях, с юмором и теплом — кто как отреагировал и чем этот образ запомнится',
@@ -2013,8 +3459,14 @@ async function revealOutfit(st) {
         occasion: a.occasion, title: a.look.title, desc: a.look.desc, effects: a.look.effects,
         result: result || 'Сцена прошла — каждый запомнил этот образ по-своему.',
         others: (a.options || []).filter(o => o !== a.look).map(o => ({ title: o.title, effects: o.effects })),
+        accent: a.accent ? { kind: a.accent.kind, title: a.accent.title, effects: a.accent.effects || '', origin: a.accent.origin || '' } : null,
+        otherAccents: (a.accents || []).filter(x => !a.accent || x.title !== a.accent.title).map(x => ({ kind: x.kind, title: x.title, effects: x.effects })),
+        image: a.image || '',
         date: st.time.date || '', stimuli: res.stimuli || 0,
     };
+    if (a.accent?.kind === 'stone') {
+        st.wardrobe.aura = { title: a.accent.title, desc: a.accent.desc || '', effects: a.accent.effects || '', until: st.time.date ? addDays(st.time.date, 3) : '', untilMsg: (ctx().chat?.length ?? 0) + 40 };
+    }
     st.wardrobe.history.push(entry);
     if (st.wardrobe.history.length > 20) st.wardrobe.history.shift();
     st.wardrobe.active = null;
@@ -2036,10 +3488,10 @@ function closePopupOf(el) {
     else dlg[0]?.close?.();
 }
 
-async function openPopup(el) {
+async function openPopup(el, wide = false) {
     const c = ctx();
     if (typeof c.callGenericPopup === 'function' && c.POPUP_TYPE) {
-        await c.callGenericPopup(el[0], c.POPUP_TYPE.TEXT, '', { okButton: 'Закрыть', allowVerticalScrolling: true, wide: false });
+        await c.callGenericPopup(el[0], c.POPUP_TYPE.TEXT, '', { okButton: 'Закрыть', allowVerticalScrolling: true, wide, large: wide });
         return true;
     }
     return false;
@@ -2049,16 +3501,28 @@ async function showWardrobePopup() {
     const st = store();
     const a = st?.wardrobe.active;
     if (!a || a.status !== 'choosing') return;
-    const el = $('<div class="nnb-pop"><h3>👗 Что надеть?</h3></div>');
+    const pick = async i => { closePopupOf(el); await chooseOutfit(i); };
+    const visual = wantImages();
+    const el = $(`<div class="nnb-pop${visual ? ' nnb-pop-visual' : ''}"><h3>👗 Что надеть?</h3></div>`);
     if (a.occasion) el.append($('<div class="nnb-pop-sub"></div>').text(a.occasion));
+
+    // описания образов: в режиме картинок — свёрнуты
+    const cards = $('<div class="nnb-looks"></div>');
     a.options.forEach((o, i) => {
         const card = $('<div class="nnb-look" tabindex="0"><div class="nnb-look-title"></div><div class="nnb-look-desc"></div></div>');
-        card.find('.nnb-look-title').text(o.title);
+        card.find('.nnb-look-title').text(`${visual ? `${i + 1}. ` : ''}${o.title}`);
         card.find('.nnb-look-desc').text(o.desc);
-        card.on('click', async () => { closePopupOf(el); await chooseOutfit(i); });
-        el.append(card);
+        card.on('click', () => pick(i));
+        cards.append(card);
     });
-    const row = $('<div class="nnb-pop-row"></div>');
+
+    if (visual) {
+        el.append(visualPicker({ kind: 'looks', items: a.options, title: o => o.title, onPick: pick, field: 'image', failField: 'imageFailed', a }));
+    } else {
+        el.append(cards);
+    }
+
+    const row = $(`<div class="nnb-pop-row${visual ? ' nnb-pop-links' : ''}"></div>`);
     const own = $('<div class="menu_button"><i class="fa-solid fa-pen"></i> Свой вариант</div>');
     own.on('click', async () => {
         closePopupOf(el);
@@ -2068,8 +3532,19 @@ async function showWardrobePopup() {
     const reroll = $('<div class="menu_button"><i class="fa-solid fa-dice"></i> Другие образы</div>');
     reroll.on('click', () => { closePopupOf(el); rerollOutfits(); });
     row.append(own, reroll);
+    if (st?.map?.pendingTravel) {
+        const cancelTravel = $('<div class="menu_button"><i class="fa-solid fa-xmark"></i> Отмена поездки</div>');
+        cancelTravel.on('click', async () => {
+            closePopupOf(el);
+            delete st.map.pendingTravel;
+            st.wardrobe.active = null;
+            await commit();
+            toastr.info('Поездка отменена', '🗺 Карта');
+        });
+        row.append(cancelTravel);
+    }
     el.append(row);
-    if (!(await openPopup(el))) toastr.info('Образы готовы — выбери в панели Блокнота', '👗 Гардероб');
+    if (!(await openPopup(el, visual))) toastr.info('Образы готовы — выбери в блокноте, вкладка «Гардероб»', '👗 Гардероб');
 }
 
 function revealCard(entry) {
@@ -2077,9 +3552,11 @@ function revealCard(entry) {
     el.append($('<div class="nnb-look-title"></div>').text(`«${entry.title}»${entry.occasion ? ` — ${entry.occasion}` : ''}`));
     el.append($('<div class="nnb-pop-result"></div>').text(entry.result));
     if (entry.effects) el.append($('<div class="nnb-pop-sub"></div>').text('Задумано было: ' + entry.effects));
-    if (entry.others?.length) {
+    if (entry.accent) el.append($('<div class="nnb-pop-sub"></div>').text(`${(ACCENT_KINDS[entry.accent.kind] || ACCENT_KINDS.accessory).icon} Штрих «${entry.accent.title}»${entry.accent.effects ? `: ${entry.accent.effects}` : ''}`));
+    if (entry.others?.length || entry.otherAccents?.length) {
         const det = $('<details><summary>А что было бы, если…</summary></details>');
-        entry.others.forEach(o => det.append($('<div class="nnb-pop-other"></div>').text(`«${o.title}»: ${o.effects || 'реакции не записаны'}`)));
+        (entry.others || []).forEach(o => det.append($('<div class="nnb-pop-other"></div>').text(`«${o.title}»: ${o.effects || 'реакции не записаны'}`)));
+        (entry.otherAccents || []).forEach(o => det.append($('<div class="nnb-pop-other"></div>').text(`${(ACCENT_KINDS[o.kind] || ACCENT_KINDS.accessory).icon} «${o.title}»: ${o.effects || 'реакции не записаны'}`)));
         el.append(det);
     }
     return el;
@@ -2094,6 +3571,589 @@ async function showRevealPopup() {
     if (!(await openPopup(revealCard(entry)))) toastr.success(escapeHtml(entry.result), '🎭 ' + escapeHtml(entry.title), { escapeHtml: false, timeOut: 12000 });
 }
 
+// ---------- 🗺 Карта: места, куда можно пойти ----------
+// кавычки снимаем только парные — «Кафе «Сова»» должно остаться целым
+function unquote(t) {
+    t = String(t || '').trim();
+    const m = t.match(/^[«"](.*)[»"]$/);
+    return (m && !/[«»]/.test(m[1].replace(/«[^»]*»/g, '')) ? m[1] : t).trim();
+}
+function mapOn(st) {
+    return !!st?.direction?.map;
+}
+function findPlace(st, title) {
+    const t = unquote(title).toLowerCase();
+    return t ? st.map.places.find(p => p.title.toLowerCase() === t) : null;
+}
+function addPlace(st, line, origin) {
+    const [title, ...rest] = String(line || '').split('|').map(x => x.trim());
+    const t = unquote(String(title || '').replace(/\]$/, ''));
+    if (!t || t.length > 80 || findPlace(st, t) || st.map.places.length >= 40) return null;
+    const pl = { id: st.map.nextId++, title: t, desc: rest.join(' | ').replace(/\]$/, '').trim(), origin, visits: 0, at: ctx().chat?.length ?? 0 };
+    st.map.places.push(pl);
+    return pl;
+}
+function buildMapSection(st) {
+    if (!mapOn(st)) return '';
+    const known = st.map.places.map(p => p.title).join('; ');
+    return `Карта мест. Уже на карте: ${known || '(пусто)'}.
+MAP: название | одно предложение, что это за место — если в чате появилось новое место, куда можно сходить (назвали кафе, упомянули парк, кто-то позвал к себе), и его ещё нет на карте.
+HERE: название — если герои сейчас в месте с карты.`;
+}
+function mapSeedPrompt(st) {
+    const names = storyNames();
+    const t = st.time;
+    const when = [t.date ? `${formatDate(t.date)}, ${season(t.date).name}` : '', placeLine(st)].filter(Boolean).join('; ');
+    const known = st.map.places.map(p => p.title);
+    return [
+        '[OOC: Пауза в ролевой игре. Сейчас ты НЕ пишешь ответ персонажа. Ты — помощник автора и рисуешь карту мест для этой истории.',
+        when ? `Когда и где: ${when}.` : '',
+        buildDirection(st),
+        `Предложи ${known.length ? 4 : 7} мест поблизости, куда ${names.user} и другие персонажи могут пойти в этой истории. Места разные по настроению: уютные, людные, тайные, деловые, на природе. Учитывай город или мир, жанр, где живут и работают герои и что уже упоминалось в чате. Реальные места — только если они правда есть в этом городе, иначе придумай правдоподобные.`,
+        known.length ? `Уже на карте (не повторяй): ${known.join(', ')}.` : '',
+        'Формат, без пояснений:',
+        'MAP: название | одно предложение, что там и чем место интересно',
+    ].filter(Boolean).join('\n') + ']';
+}
+async function seedMap() {
+    const added = await withBusy('🗺 Модель набрасывает карту…', async st => {
+        const raw = await quietGenerate(mapSeedPrompt(st));
+        st.lastRaw = String(raw ?? '');
+        const out = [];
+        for (const line of String(raw || '').replace(/\*\*/g, '').split(/\r?\n/)) {
+            const m = line.match(/^\s*MAP\s*[:：—–-]\s*(.+)$/i);
+            if (m) { const pl = addPlace(st, m[1], 'start'); if (pl) out.push(pl); }
+        }
+        if (!out.length) toastr.warning('Модель не прислала места по формату — загляни в «Последний ответ модели»', '🗺 Карта');
+        return out;
+    });
+    return added || [];
+}
+
+async function checkPendingTravel() {
+    const st = store();
+    if (!st?.map?.pendingTravel) return;
+    const pt = st.map.pendingTravel;
+    delete st.map.pendingTravel;
+    await ctx().saveMetadata();
+    const pl = (pt.placeId && st.map.places.find(p => p.id === pt.placeId)) || { id: pt.placeId, title: pt.title, desc: pt.desc };
+    await finalizeTravel(pl, { skipDays: pt.skipDays, companion: pt.companion });
+}
+
+async function finalizeTravel(pl, { skipDays = 0, companion = '' } = {}) {
+    const st = store();
+    if (!st) return;
+    let moved = 0;
+    if (skipDays > 0) {
+        moved = skipDays;
+        if (st.direction.time && st.time.date) {
+            st.time.date = addDays(st.time.date, skipDays);
+            if (settings().events) await holidayStep(st);
+        }
+    }
+    if (pl.id) {
+        pl.visits = (pl.visits || 0) + 1;
+        st.map.current = pl.id;
+    }
+    await ctx().saveMetadata();
+    renderPanel();
+
+    const names = storyNames();
+    const when = moved
+        ? (moved === 1 ? ' Наступил следующий день.' : ` Прошло ${daysWord(moved)}.`) +
+          (st.direction.time && st.time.date ? ` Сейчас ${weekday(st.time.date)}, ${formatDate(st.time.date)}.` : '')
+        : '';
+    const compText = companion && companion.trim() && !/^в одиночку$/i.test(companion.trim())
+        ? ` Вместе с: ${companion.trim()}.`
+        : ' В одиночку.';
+    const text = `${FF_MARKER} игрок решил отправиться: «${pl.title}»${pl.desc ? ` — ${String(pl.desc).replace(/[.\s]+$/, '')}` : ''}.${compText}${when} Сверни текущую сцену одной-двумя фразами и начни новую уже там: дорога коротко (если она не важна), прибытие, какое это место сейчас, кто там и что происходит. ${pl.visits > 1 ? `${names.user} здесь уже бывал(а) — что-то знакомое, что-то изменилось.` : ''} Пиши как обычный ответ, не упоминай карту.]`;
+
+    ctx().setExtensionPrompt(INJECT_FF_KEY, text, POS_IN_CHAT, 0, false, 0);
+    ffPending = true;
+
+    const timeLabel = moved ? (moved === 1 ? ' · завтра' : ` · +${daysWord(moved)}`) : '';
+    const compLabel = companion && !/^в одиночку$/i.test(companion.trim()) ? ` · с ${escapeHtml(companion.trim())}` : '';
+    toastr.info(`Отправляемся: ${escapeHtml(pl.title)}${timeLabel}${compLabel}`, '🗺 Карта', { escapeHtml: false, timeOut: 4500 });
+
+    const send = $('#send_but');
+    if (send.length) send.trigger('click');
+    else if (typeof ctx().generate === 'function') ctx().generate('normal');
+}
+
+async function executeTravel(place, { skipDays = 0, companion = '', changeOutfit = false } = {}) {
+    const st = store();
+    if (!st) return toastr.warning('Сначала открой чат', 'Блокнот рассказчика');
+    if (busy) return toastr.info('Модель уже занята — подожди пару секунд', 'Блокнот рассказчика');
+    let pl = place;
+    if (!pl?.title) return;
+
+    if (changeOutfit && st.direction.wardrobe) {
+        st.map.pendingTravel = {
+            placeId: pl.id || null,
+            title: pl.title,
+            desc: pl.desc || '',
+            skipDays,
+            companion: companion || '',
+        };
+        await ctx().saveMetadata();
+        st.wardrobe.active = null;
+        const occasion = `поездка: ${pl.title}`;
+        const ok = await withBusy(`👗 Подбираем наряды для: ${pl.title}…`, s2 => generateOutfits(s2, occasion));
+        if (ok) presentLooks();
+        return;
+    }
+    await finalizeTravel(pl, { skipDays, companion });
+}
+
+async function openTravelModal(place, customText) {
+    const st = store();
+    if (!st) return toastr.warning('Сначала открой чат', 'Блокнот рассказчика');
+    if (busy) return toastr.info('Модель уже занята — подожди пару секунд', 'Блокнот рассказчика');
+
+    let pl = place;
+    if (!pl && customText) pl = findPlace(st, customText) || addPlace(st, customText, 'user') || { title: customText.trim(), desc: '' };
+    if (!pl?.title) return;
+
+    const el = $('<div class="nnb-pop nnb-travel-pop"></div>');
+    el.append($('<h3></h3>').text(`🧳 Сборы: ${pl.title}`));
+
+    const metaParts = [];
+    if (pl.desc) metaParts.push(pl.desc);
+    if (pl.visits) metaParts.push(`бывали здесь: ${pl.visits}×`);
+    if (metaParts.length) el.append($('<div class="nnb-pop-sub"></div>').text(metaParts.join(' · ')));
+
+    // 1. Когда отправляемся
+    el.append('<div class="nnb-travel-sec-title">📅 Когда отправляемся?</div>');
+    const timeChips = $('<div class="nnb-chips-row nnb-travel-chips"></div>');
+    let skipDays = 0;
+
+    const timeOptions = [
+        { label: '☀️ Сегодня', days: 0 },
+        { label: '🌅 Завтра', days: 1 },
+        { label: '📅 Через 2 дня', days: 2 },
+        { label: '⏳ Через неделю', days: 7 },
+    ];
+
+    const dateHint = $('<div class="nnb-pop-sub nnb-travel-date-hint"></div>');
+    const updateDateHint = () => {
+        if (!st.direction.time || !st.time.date) {
+            dateHint.text(skipDays === 0 ? 'Текущий день истории' : skipDays === 1 ? 'Сцена начнётся на следующий день' : `Сцена начнётся через ${daysWord(skipDays)}`);
+            return;
+        }
+        const targetDate = addDays(st.time.date, skipDays);
+        dateHint.text(`Дата: ${weekday(targetDate)}, ${formatDate(targetDate)}${skipDays > 0 ? ` (+${daysWord(skipDays)})` : ' (сегодня)'}`);
+    };
+
+    const customDaysChip = $('<div class="nnb-travel-chip" tabindex="0">✏️ Свой срок…</div>');
+    const customDaysInput = $('<input type="number" min="1" max="365" class="text_pole nnb-travel-custom-days" style="display:none; width:75px; margin:0 4px;" placeholder="дней">');
+
+    timeOptions.forEach(opt => {
+        const chip = $('<div class="nnb-travel-chip" tabindex="0"></div>').text(opt.label);
+        if (opt.days === skipDays) chip.addClass('active');
+        chip.on('click', () => {
+            skipDays = opt.days;
+            customDaysInput.val('').hide();
+            timeChips.find('.nnb-travel-chip').removeClass('active');
+            chip.addClass('active');
+            updateDateHint();
+        });
+        timeChips.append(chip);
+    });
+
+    customDaysChip.on('click', () => {
+        timeChips.find('.nnb-travel-chip').removeClass('active');
+        customDaysChip.addClass('active');
+        customDaysInput.show().trigger('focus');
+        skipDays = Math.max(1, Number(customDaysInput.val()) || 1);
+        updateDateHint();
+    });
+    customDaysInput.on('input change', () => {
+        skipDays = Math.max(1, Number(customDaysInput.val()) || 1);
+        updateDateHint();
+    });
+    timeChips.append(customDaysChip, customDaysInput);
+    el.append(timeChips, dateHint);
+    updateDateHint();
+
+    // 2. Что надеть
+    let changeOutfit = false;
+    if (st.direction.wardrobe) {
+        el.append('<div class="nnb-travel-sec-title">👗 Что надеть?</div>');
+        const wardChips = $('<div class="nnb-chips-row nnb-travel-chips"></div>');
+        const wardHint = $('<div class="nnb-pop-sub nnb-travel-ward-hint"></div>');
+
+        const curOutfit = st.wardrobe?.active?.status === 'worn' ? st.wardrobe.active.look.title : '';
+        const keepChip = $('<div class="nnb-travel-chip active" tabindex="0">🧥 Пойти как есть</div>');
+        const changeChip = $('<div class="nnb-travel-chip" tabindex="0">✨ Подобрать наряд под место</div>');
+
+        const updateWardHint = () => {
+            if (!changeOutfit) {
+                wardHint.text(curOutfit ? `Сейчас надето: «${curOutfit}»` : 'Без смены наряда');
+            } else {
+                wardHint.text(`Перед отправлением откроется выбор образов для «${pl.title}»`);
+            }
+        };
+
+        keepChip.on('click', () => {
+            changeOutfit = false;
+            keepChip.addClass('active');
+            changeChip.removeClass('active');
+            updateWardHint();
+        });
+        changeChip.on('click', () => {
+            changeOutfit = true;
+            changeChip.addClass('active');
+            keepChip.removeClass('active');
+            updateWardHint();
+        });
+
+        wardChips.append(keepChip, changeChip);
+        el.append(wardChips, wardHint);
+        updateWardHint();
+    }
+
+    // 3. С кем идём
+    el.append('<div class="nnb-travel-sec-title">👥 Кто с нами?</div>');
+    const compChips = $('<div class="nnb-chips-row nnb-travel-chips"></div>');
+    let companion = '';
+
+    const soloChip = $('<div class="nnb-travel-chip active" tabindex="0">🚶 В одиночку</div>');
+    compChips.append(soloChip);
+
+    const names = storyNames();
+    const candidateCompanions = [];
+    (names.chars || []).forEach(cName => {
+        if (cName && !candidateCompanions.includes(cName)) candidateCompanions.push(cName);
+    });
+    (st.npcs || []).slice(0, 6).forEach(n => {
+        if (n.name && !candidateCompanions.includes(n.name)) candidateCompanions.push(n.name);
+    });
+
+    candidateCompanions.forEach(cName => {
+        const chip = $('<div class="nnb-travel-chip" tabindex="0"></div>').text(`С ${cName}`);
+        chip.on('click', () => {
+            companion = cName;
+            compChips.find('.nnb-travel-chip').removeClass('active');
+            chip.addClass('active');
+            compInput.val(cName);
+        });
+        compChips.append(chip);
+    });
+
+    const compInput = $('<input type="text" class="text_pole nnb-travel-comp-input" placeholder="Или напиши имя/компанию…">');
+    soloChip.on('click', () => {
+        companion = '';
+        compChips.find('.nnb-travel-chip').removeClass('active');
+        soloChip.addClass('active');
+        compInput.val('');
+    });
+    compInput.on('input', () => {
+        companion = compInput.val().trim();
+        compChips.find('.nnb-travel-chip').removeClass('active');
+        if (!companion) soloChip.addClass('active');
+    });
+
+    el.append(compChips, compInput);
+
+    // 4. Кнопки
+    const actRow = $('<div class="nnb-pop-row nnb-travel-actions"></div>');
+    const goBtn = $('<div class="menu_button nnb-btn-primary" tabindex="0"><i class="fa-solid fa-person-walking"></i> Отправиться</div>');
+    const cancelBtn = $('<div class="menu_button" tabindex="0"><i class="fa-solid fa-xmark"></i> Отмена</div>');
+
+    goBtn.on('click', async () => {
+        closePopupOf(el);
+        await executeTravel(pl, { skipDays, companion, changeOutfit });
+    });
+    cancelBtn.on('click', () => closePopupOf(el));
+
+    actRow.append(goBtn, cancelBtn);
+    el.append(actRow);
+
+    await openPopup(el);
+}
+
+async function goToPlace(place, customText) {
+    return openTravelModal(place, customText);
+}
+
+function placeRow(st, pl, onGo, tools) {
+    const row = $('<div class="nnb-note nnb-place"><div class="nnb-place-main"><div class="nnb-npc-text"></div><div class="nnb-npc-status"></div></div></div>');
+    const here = st.map.current === pl.id;
+    if (here) row.addClass('nnb-place-here');
+    row.find('.nnb-npc-text').text(`${here ? '📍' : pl.origin === 'story' ? '✨' : pl.origin === 'user' ? '✏️' : '•'} ${pl.title}`);
+    const meta = [pl.desc, here ? 'вы здесь' : pl.visits ? `уже бывали: ${pl.visits}×` : ''].filter(Boolean).join(' · ');
+    if (meta) row.find('.nnb-npc-status').text(meta); else row.find('.nnb-npc-status').remove();
+    row.find('.nnb-place-main').css('cursor', 'pointer').on('click', () => onGo(pl));
+    if (tools) {
+        const act = $('<div class="nnb-actions"><i class="fa-solid fa-pen" title="Изменить"></i><i class="fa-solid fa-trash" title="Убрать с карты"></i></div>');
+        act.find('.fa-pen').on('click', async () => {
+            const t = await askText('Название места', pl.title);
+            if (t === null) return;
+            const d = await askText('Что там? Можно оставить пустым', pl.desc);
+            if (d === null) return;
+            if (t.trim()) pl.title = t.trim();
+            pl.desc = d.trim();
+            await commit();
+        });
+        act.find('.fa-trash').on('click', async () => { st.map.places = st.map.places.filter(x => x !== pl); if (st.map.current === pl.id) st.map.current = null; await commit(); });
+        row.append(act);
+    }
+    return row;
+}
+function sortedPlaces(st) {
+    // сначала свежие находки сюжета, потом остальное по порядку
+    return [...st.map.places].sort((a, b) => (b.origin === 'story' && !b.visits) - (a.origin === 'story' && !a.visits) || a.id - b.id);
+}
+
+async function showMapPopup() {
+    const st = store();
+    if (!st) return toastr.warning('Сначала открой чат', 'Блокнот рассказчика');
+    if (!mapOn(st)) return toastr.info('Карта выключена в этом чате — включи её в блокноте, вкладка «Сюжет»', '🗺 Карта');
+    if (!st.map.places.length) {
+        const added = await seedMap();
+        if (!added.length) return;
+    }
+    const el = $('<div class="nnb-pop nnb-map-pop"><h3>🗺 Куда пойти?</h3></div>');
+    const go = async pl => { closePopupOf(el); await goToPlace(pl); };
+    const list = $('<div class="nnb-places"></div>');
+    sortedPlaces(st).forEach(pl => list.append(placeRow(st, pl, go, false)));
+    el.append(list);
+    const custom = $('<div class="nnb-pop-row nnb-map-custom"><input type="text" class="text_pole" placeholder="Свой вариант: куда идём?"><div class="menu_button"><i class="fa-solid fa-person-walking"></i> Пойти</div></div>');
+    const doCustom = async () => { const t = String(custom.find('input').val() || '').trim(); if (!t) return; closePopupOf(el); await goToPlace(null, t); };
+    custom.find('.menu_button').on('click', doCustom);
+    custom.find('input').on('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doCustom(); } });
+    el.append(custom);
+    el.append($('<div class="nnb-pop-row nnb-pop-links"></div>').append($('<div class="menu_button"><i class="fa-solid fa-book-open"></i> Карта в блокноте</div>').on('click', () => { closePopupOf(el); openBook('map'); })));
+    await openPopup(el);
+}
+
+function renderMap(st) {
+    const root = $('#nnb_map_box').empty();
+    if (!mapOn(st)) return;
+    const m = st.map;
+    const det = $('<details open class="nnb-section"><summary></summary></details>');
+    det.find('summary').text(`🗺 Карта (${m.places.length})`);
+    const cur = m.places.find(p => p.id === m.current);
+    if (cur) det.append($('<div class="nnb-npc-status"></div>').text(`📍 Сейчас: ${cur.title}`));
+    if (!m.places.length) det.append('<div class="nnb-empty">Карта пока пустая. Набросай её — модель предложит несколько мест вокруг, а дальше карта будет расти сама, когда в сюжете появятся новые места.</div>');
+    sortedPlaces(st).forEach(pl => det.append(placeRow(st, pl, pl2 => { closeBook(); goToPlace(pl2); }, true)));
+    const btns = $('<div class="nnb-buttons"></div>');
+    btns.append($('<div class="menu_button"><i class="fa-solid fa-map"></i> Куда пойти?</div>').on('click', () => { closeBook(); showMapPopup(); }));
+    btns.append($(`<div class="menu_button"><i class="fa-solid fa-wand-magic-sparkles"></i> ${m.places.length ? 'Ещё мест' : 'Набросать карту'}</div>`).on('click', () => seedMap()));
+    btns.append($('<div class="menu_button"><i class="fa-solid fa-plus"></i> Добавить место</div>').on('click', async () => {
+        const t = await askText('Название места');
+        if (!t || !t.trim()) return;
+        const d = await askText('Что там? Можно оставить пустым');
+        if (d === null) return;
+        addPlace(st, `${t.trim()} | ${d.trim()}`, 'user');
+        await commit();
+    }));
+    det.append(btns);
+    root.append(det);
+}
+
+// 🎁 Шкатулка и 🎰 находки — своя вкладка
+function boxOn(st) {
+    return accentsOn(st) || gachaOn(st);
+}
+function findThumb(x, size) {
+    const el = $('<div class="nnb-card-img nnb-find-thumb"></div>').css({ width: size, height: size });
+    applyCrop(el, x.image, x.crop || { x: 0, y: 0, w: 1, h: 1 }, 1.5);
+    return el;
+}
+
+// ---------- Активные предметы из шкатулки ----------
+async function toggleEquipped(x) {
+    const st = store();
+    if (!st) return;
+    if (!Array.isArray(st.wardrobe.equipped)) st.wardrobe.equipped = [];
+    const idx = st.wardrobe.equipped.indexOf(x.id);
+    if (idx >= 0) {
+        st.wardrobe.equipped.splice(idx, 1);
+        toastr.info(`«${escapeHtml(x.title)}» убран в шкатулку`, '🎒 Предмет', { escapeHtml: false });
+    } else {
+        if (st.wardrobe.equipped.length >= 3) st.wardrobe.equipped.shift();
+        st.wardrobe.equipped.push(x.id);
+        toastr.success(`«${escapeHtml(x.title)}» взят с собой (наготове)`, '🎒 Активный предмет', { escapeHtml: false });
+    }
+    await commit();
+}
+
+async function applyItemInScene(x, customAction) {
+    const st = store();
+    if (!st) return toastr.warning('Сначала открой чат', 'Блокнот рассказчика');
+    if (busy) return toastr.info('Модель уже занята — подожди пару секунд', 'Блокнот рассказчика');
+    const names = storyNames();
+    const place = st.map?.places?.find(p => p.id === st.map?.current);
+    const where = place ? ` в месте «${place.title}»` : '';
+    const act = customAction ? ` Действие: ${customAction}.` : '';
+    const text = `${FF_MARKER} ${names.user} достаёт и применяет предмет: «${x.title}»${x.desc ? ` — ${x.desc}` : ''}${where}.${act} Опиши реакцию персонажей и последствия этого действия. Пиши как обычный ответ, не упоминай команды.]`;
+    ctx().setExtensionPrompt(INJECT_FF_KEY, text, POS_IN_CHAT, 0, false, 0);
+    ffPending = true;
+    toastr.info(`Применяем: ${escapeHtml(x.title)}`, '🪄 Активный предмет', { escapeHtml: false, timeOut: 4000 });
+    const send = $('#send_but');
+    if (send.length) send.trigger('click');
+    else if (typeof ctx().generate === 'function') ctx().generate('normal');
+}
+
+async function giftItemToNpc(x, npcName) {
+    const st = store();
+    if (!st) return;
+    x.giftedTo = npcName.trim();
+    x.giftedAt = ctx().chat.length;
+    st.wardrobe.equipped = (st.wardrobe.equipped || []).filter(id => id !== x.id);
+    await commit();
+    const names = storyNames();
+    const text = `${FF_MARKER} ${names.user} дарит «${x.title}» персонажу ${x.giftedTo}. Это подарок (${x.origin || x.desc || 'особенная вещь'}). Опиши реакцию ${x.giftedTo} в характере и как этот жест отразится на их отношениях.]`;
+    ctx().setExtensionPrompt(INJECT_FF_KEY, text, POS_IN_CHAT, 0, false, 0);
+    ffPending = true;
+    toastr.success(`🎁 «${escapeHtml(x.title)}» теперь у ${escapeHtml(x.giftedTo)}`, 'Подарок', { escapeHtml: false, timeOut: 5000 });
+    const send = $('#send_but');
+    if (send.length) send.trigger('click');
+    else if (typeof ctx().generate === 'function') ctx().generate('normal');
+}
+
+async function promptGiftItem(x) {
+    const st = store();
+    if (!st) return;
+    const npcs = (st.npcs || []).map(n => n.name);
+    let target = '';
+    if (npcs.length) {
+        target = await askText(`Кому подарить «${x.title}»? Персонажи: ${npcs.join(', ')}`);
+    } else {
+        target = await askText(`Кому подарить «${x.title}»? Назови имя персонажа`);
+    }
+    if (!target || !target.trim()) return;
+    await giftItemToNpc(x, target.trim());
+}
+
+function showFind(x) {
+    const st = store();
+    const r = x.rarity ? rarityOf(x.rarity) : null;
+    const isEquipped = (st?.wardrobe?.equipped || []).includes(x.id);
+    const el = $('<div class="nnb-pop"></div>');
+    if (x.image) el.append(findThumb(x, '240px').addClass('nnb-find-big' + (r ? ` nnb-rar nnb-rar-${x.rarity}` : '')));
+    el.append($('<h3></h3>').text(`${(ACCENT_KINDS[x.kind] || ACCENT_KINDS.find).icon} ${x.title}`));
+    let sub = [r ? `${r.stars} ${r.name}` : '', x.price || '', x.giftedTo ? `🎁 у ${x.giftedTo}` : isEquipped ? '🎒 с собой' : ''].filter(Boolean).join(' · ');
+    if (sub) el.append($('<div class="nnb-pop-sub"></div>').text(sub));
+    if (x.desc) el.append($('<div class="nnb-look-desc"></div>').text(x.desc));
+    if (x.origin) el.append($('<div class="nnb-pop-sub"></div>').text(x.origin));
+
+    const acts = $('<div class="nnb-pop-row nnb-item-actions"></div>');
+    if (x.giftedTo) {
+        const reclaimBtn = $(`<div class="menu_button"><i class="fa-solid fa-rotate-left"></i> Вернуть в шкатулку</div>`);
+        reclaimBtn.on('click', async () => {
+            closePopupOf(el);
+            delete x.giftedTo;
+            delete x.giftedAt;
+            await commit();
+            toastr.info(`«${escapeHtml(x.title)}» возвращён в шкатулку`, 'Шкатулка', { escapeHtml: false });
+        });
+        acts.append(reclaimBtn);
+    } else {
+        const eqBtn = $(`<div class="menu_button"><i class="fa-solid fa-briefcase"></i> ${isEquipped ? 'Убрать в шкатулку' : 'Взять с собой'}</div>`);
+        eqBtn.on('click', async () => {
+            closePopupOf(el);
+            await toggleEquipped(x);
+        });
+        acts.append(eqBtn);
+
+        const giftBtn = $('<div class="menu_button"><i class="fa-solid fa-gift"></i> Подарить…</div>');
+        giftBtn.on('click', async () => {
+            closePopupOf(el);
+            await promptGiftItem(x);
+        });
+        acts.append(giftBtn);
+    }
+    const applyBtn = $('<div class="menu_button"><i class="fa-solid fa-wand-magic-sparkles"></i> Применить в сцене</div>');
+    applyBtn.on('click', async () => {
+        closePopupOf(el);
+        const act = await askText(`Как применить «${x.title}» в сцене? Оставь пустым — модель решит сама.`);
+        if (act === null) return;
+        await applyItemInScene(x, act.trim());
+    });
+    acts.append(applyBtn);
+
+    el.append(acts);
+    openPopup(el);
+}
+function renderBox(st) {
+    const root = $('#nnb_box_box').empty();
+    if (!boxOn(st)) return;
+    const w = st.wardrobe;
+    if (gachaOn(st)) {
+        const g = st.gacha;
+        const det = $('<details open class="nnb-section"><summary>🎰 Находки</summary></details>');
+        if (g.active?.status === 'choosing') {
+            const card = $('<div class="nnb-note nnb-event"><div class="nnb-event-title"></div><div class="nnb-meta">Находки ждут выбора</div></div>');
+            card.find('.nnb-event-title').text(g.active.place || 'Прилавок');
+            card.append($('<div class="menu_button"><i class="fa-solid fa-eye"></i> Посмотреть</div>').on('click', presentGacha));
+            card.append($('<div class="menu_button"><i class="fa-solid fa-xmark"></i> Уйти ни с чем</div>').on('click', async () => { if (g.active.options.some(o => o.taken)) await finishGacha(); else { g.active = null; await commit(); } }));
+            det.append(card);
+        } else {
+            const left = gachaSpinsLeft(st);
+            det.append($('<div class="nnb-npc-status"></div>').text(`Прокруток на этом посте: ${left} из ${GACHA_LIMIT}${left ? '' : ' (снова — со следующим постом)'} · до гарантированной эпической: ${Math.max(1, GACHA_PITY - (g.pity || 0))}`));
+            det.append($('<div class="menu_button"><i class="fa-solid fa-dice"></i> Испытать удачу</div>').on('click', () => startGacha()));
+            const stt = g.stats || {};
+            const seen = RARITIES.reduce((a2, r) => a2 + (stt[r.id] || 0), 0);
+            if (seen) det.append($('<div class="nnb-npc-status"></div>').text(`Выпадало за ${g.total || 0} прокр. (${seen} находок): ` + RARITIES.map(r => `${r.icon} ${stt[r.id] || 0}`).join(' · ') + ' — шансы на каждую находку: ' + RARITIES.map(r => `${r.w}%`).join(' / ')));
+        }
+        root.append(det);
+    }
+    const det = $('<details open class="nnb-section"><summary></summary></details>');
+    det.find('summary').text(`🎁 Шкатулка (${w.box.length})`);
+    if (!w.box.length) det.append('<div class="nnb-empty">Здесь будут находки, духи, косметика и украшения из сюжета: подарки, покупки, трофеи. Модель замечает их при размышлении, или добавь сама.</div>');
+    [...w.box].reverse().forEach(x => {
+        const row = $('<div class="nnb-note nnb-box-item"><div class="nnb-box-main"><div class="nnb-npc-text"></div><div class="nnb-npc-status"></div></div><div class="nnb-actions"><i class="fa-solid fa-pen" title="Изменить"></i><i class="fa-solid fa-trash" title="Убрать из шкатулки"></i></div></div>');
+        if (x.rarity) row.addClass(`nnb-rar nnb-rar-${x.rarity}`);
+        const r = x.rarity ? rarityOf(x.rarity) : null;
+        row.find('.nnb-npc-text').text(`${(ACCENT_KINDS[x.kind] || ACCENT_KINDS.find).icon} ${x.title}${r ? ` ${r.stars}` : ''}`);
+        if (x.origin || x.desc) row.find('.nnb-npc-status').text([x.desc, x.origin].filter(Boolean).join(' · ')); else row.find('.nnb-npc-status').remove();
+        if (x.image) row.prepend(findThumb(x, '64px'));
+        row.find('.nnb-box-main, .nnb-find-thumb').css('cursor', 'pointer').on('click', () => showFind(x));
+        row.find('.fa-pen').on('click', async () => {
+            const t = await askText('Что это за вещь?', x.title);
+            if (t === null) return;
+            const o = await askText('Откуда она? Например «подарок Кайлара на годовщину»', x.origin);
+            if (o === null) return;
+            if (t.trim()) { x.title = t.trim(); x.kind = x.rarity ? findKind(t) : accentKind(t); }
+            x.origin = o.trim();
+            await commit();
+        });
+        if ((st.wardrobe.equipped || []).includes(x.id)) {
+            row.find('.nnb-meta, .nnb-npc-status').prepend('<span class="nnb-item-badge nnb-badge-equipped">🎒 с собой</span> ');
+        } else if (x.giftedTo) {
+            row.find('.nnb-meta, .nnb-npc-status').prepend(`<span class="nnb-item-badge nnb-badge-gifted">🎁 у ${escapeHtml(x.giftedTo)}</span> `);
+        }
+        const quickAct = $('<i class="fa-solid fa-wand-magic-sparkles" title="Применить в сцене"></i>').on('click', async (e) => {
+            e.stopPropagation();
+            const act = await askText(`Как применить «${x.title}» в сцене? Оставь пустым — модель решит сама.`);
+            if (act === null) return;
+            await applyItemInScene(x, act.trim());
+        });
+        const quickGift = $('<i class="fa-solid fa-gift" title="Подарить персонажу"></i>').on('click', async (e) => {
+            e.stopPropagation();
+            await promptGiftItem(x);
+        });
+        row.find('.nnb-actions').prepend(quickGift).prepend(quickAct);
+        row.find('.fa-trash').on('click', async () => {
+            w.box = w.box.filter(y => y !== x);
+            w.equipped = (w.equipped || []).filter(id => id !== x.id);
+            await commit();
+        });
+        det.append(row);
+    });
+    det.append($('<div class="menu_button"><i class="fa-solid fa-gem"></i> Добавить вещь</div>').on('click', async () => {
+        const t = await askText('Что это? Например «духи с бергамотом», «кулон с аметистом», «старое письмо»');
+        if (!t || !t.trim()) return;
+        const o = await askText('Откуда она? Можно оставить пустым');
+        if (o === null) return;
+        w.box.push({ id: w.nextItemId++, kind: findKind(t), title: t.trim(), desc: '', origin: o.trim(), at: ctx().chat.length });
+        await commit();
+    }));
+    root.append(det);
+}
+
 function renderWardrobe(st) {
     const root = $('#nnb_wardrobe_box').empty();
     if (!st.direction.wardrobe) return;
@@ -2104,14 +4164,19 @@ function renderWardrobe(st) {
     if (a?.status === 'choosing') {
         const box = $('<div class="nnb-note nnb-event"><div class="nnb-event-title">Образы ждут выбора</div><div class="nnb-meta"></div></div>');
         box.find('.nnb-meta').text(a.occasion || 'для ближайшей сцены');
-        const open = $('<div class="menu_button"><i class="fa-solid fa-shirt"></i> Выбрать образ</div>').on('click', showWardrobePopup);
-        const cancel = $('<div class="menu_button"><i class="fa-solid fa-xmark"></i> Не нужно</div>').on('click', async () => { w.active = null; await commit(); });
+        const open = $('<div class="menu_button"><i class="fa-solid fa-shirt"></i> Выбрать образ</div>').on('click', presentLooks);
+        const cancel = $('<div class="menu_button"><i class="fa-solid fa-xmark"></i> Не нужно</div>').on('click', async () => {
+            w.active = null;
+            if (st.map?.pendingTravel) delete st.map.pendingTravel;
+            await commit();
+        });
         box.append(open, cancel);
         det.append(box);
     } else if (a?.status === 'worn') {
         const box = $('<div class="nnb-note nnb-event"><div class="nnb-event-title"></div><div class="nnb-npc-text nnb-text"></div><div class="nnb-meta">Последствия раскроются, когда сцена пройдёт: модель отметит это при размышлении, или нажми кнопку.</div></div>');
         box.find('.nnb-event-title').text(`Сейчас: «${a.look.title}»${a.occasion ? ` — ${a.occasion}` : ''}`);
-        box.find('.nnb-npc-text').text(a.look.desc);
+        box.find('.nnb-npc-text').text(a.look.desc + (a.accent ? `\n${(ACCENT_KINDS[a.accent.kind] || ACCENT_KINDS.accessory).icon} ${a.accent.title}` : ''));
+        if (accentsOn(st) && !a.accent) box.append($('<div class="menu_button"><i class="fa-solid fa-wand-magic-sparkles"></i> Добавить штрих</div>').on('click', presentAccents));
         const rev = $('<div class="menu_button"><i class="fa-solid fa-masks-theater"></i> Сцена прошла — чем это обернулось?</div>').on('click', runReveal);
         box.append(rev);
         det.append(box);
@@ -2121,13 +4186,15 @@ function renderWardrobe(st) {
     if (!a || a.status === 'worn') {
         det.append($('<div class="menu_button"><i class="fa-solid fa-shirt"></i> Подобрать образ</div>').on('click', startWardrobe));
     }
+    const aura = auraInjection(st);
+    if (aura) det.append($('<div class="nnb-npc-status"></div>').text(`💎 Сейчас действует талисман: ${w.aura.title}${w.aura.effects ? ` — ${w.aura.effects}` : ''}`));
     if (w.history.length) {
         const hist = $('<details><summary></summary></details>');
         hist.find('summary').text(`История образов (${w.history.length})`);
         [...w.history].reverse().forEach(h => {
             const row = $('<div class="nnb-note"><div class="nnb-meta"></div><div class="nnb-npc-text"></div><div class="nnb-npc-status"></div></div>');
             row.find('.nnb-meta').text([h.date ? formatDate(h.date) : '', h.occasion].filter(Boolean).join(' · '));
-            row.find('.nnb-npc-text').text(`«${h.title}»`);
+            row.find('.nnb-npc-text').text(`«${h.title}»${h.accent ? ` + ${(ACCENT_KINDS[h.accent.kind] || ACCENT_KINDS.accessory).icon} ${h.accent.title}` : ''}`);
             row.find('.nnb-npc-status').text(h.result);
             row.css('cursor', 'pointer').on('click', () => openPopup(revealCard(h)));
             hist.append(row);
@@ -2137,27 +4204,326 @@ function renderWardrobe(st) {
 }
 
 // Метки в ответе модели: <!--✓2--> (задача праздника выполнена), <!--день+1--> (наступил следующий день)
+
+function parseActionPrompts(raw) {
+    if (!raw) return [];
+    let text = String(raw).trim().replace(/[*_~`]/g, '');
+    let parts = [];
+    if (text.includes('|')) {
+        parts = text.split('|');
+    } else if (text.includes('\n')) {
+        parts = text.split(/\r?\n/);
+    } else if (text.includes(' / ')) {
+        parts = text.split(' / ');
+    } else {
+        parts = text.split(/(?:^|\s+)(?:\d+[.)]\s*|[•-]\s*)/).filter(Boolean);
+    }
+    return parts.map(p => {
+        return p.trim()
+            .replace(/^[-*•\d.)\s]+/, '')
+            .replace(/^[\[«"']|[\]»"']$/g, '')
+            .replace(/^[-—–\s]+/, '')
+            .trim();
+    }).filter(p => p.length > 1 && !/^actions?$/i.test(p)).slice(0, 5);
+}
+
+function chooseActionPrompt(text, autoSend = false) {
+    const textarea = $('#send_textarea');
+    if (!textarea.length) return;
+    textarea.val(text).trigger('input').focus();
+    try {
+        textarea[0].dispatchEvent(new Event('input', { bubbles: true }));
+    } catch (e) { /* ignore */ }
+    try {
+        textarea[0]?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+    } catch (e) { /* ignore */ }
+    if (autoSend) {
+        const sendBtn = $('#send_but');
+        if (sendBtn.length) {
+            setTimeout(() => sendBtn.trigger('click'), 60);
+        }
+    }
+}
+
+function ensureActionStyles() {
+    if (document.getElementById('nnb-action-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'nnb-action-styles';
+    style.textContent = `
+        #chat .mes .nnb-action-prompts,
+        #chat .nnb-action-prompts,
+        .mes_text .nnb-action-prompts,
+        .mes_block .nnb-action-prompts,
+        .nnb-action-prompts {
+            display: block !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            box-sizing: border-box !important;
+            clear: both !important;
+            margin: 14px 0 6px 0 !important;
+            padding: 10px 14px !important;
+            border-radius: 12px !important;
+            border: 1px solid color-mix(in srgb, var(--SmartThemeQuoteColor, #8b78c4) 28%, transparent) !important;
+            background: color-mix(in srgb, var(--SmartThemeQuoteColor, #8b78c4) 8%, transparent) !important;
+            overflow: visible !important;
+        }
+        #chat .mes .nnb-action-prompts-head,
+        .nnb-action-prompts-head {
+            font-size: 0.85em !important;
+            font-weight: 600 !important;
+            opacity: 0.85 !important;
+            display: flex !important;
+            align-items: center !important;
+            gap: 6px !important;
+            color: var(--SmartThemeQuoteColor, #8b78c4) !important;
+            margin-bottom: 8px !important;
+        }
+        #chat .mes .nnb-action-chips,
+        #chat .nnb-action-chips,
+        .nnb-action-chips {
+            display: flex !important;
+            flex-direction: column !important;
+            gap: 8px !important;
+            width: 100% !important;
+            box-sizing: border-box !important;
+        }
+        #chat .mes .nnb-action-chip,
+        #chat .nnb-action-chip,
+        .nnb-action-chip {
+            display: block !important;
+            width: 100% !important;
+            box-sizing: border-box !important;
+            padding: 10px 14px !important;
+            border-radius: 10px !important;
+            border: 1px solid var(--SmartThemeBorderColor) !important;
+            background: color-mix(in srgb, var(--SmartThemeBodyColor, #fff) 8%, transparent) !important;
+            color: var(--SmartThemeBodyColor, inherit) !important;
+            font-size: 0.92em !important;
+            cursor: pointer !important;
+            line-height: 1.4 !important;
+            white-space: normal !important;
+            word-break: normal !important;
+            overflow-wrap: break-word !important;
+            text-align: left !important;
+            transition: all 0.15s ease !important;
+            user-select: none !important;
+        }
+        .nnb-action-chip:hover {
+            border-color: var(--SmartThemeQuoteColor, #8b78c4) !important;
+            background: color-mix(in srgb, var(--SmartThemeQuoteColor, #8b78c4) 14%, transparent) !important;
+        }
+        .nnb-action-chip:active {
+            transform: translateY(1px) !important;
+        }
+        .nnb-action-custom {
+            display: flex !important;
+            align-items: center !important;
+            gap: 8px !important;
+            border-style: dashed !important;
+            opacity: 0.8 !important;
+        }
+        .nnb-action-custom:hover {
+            opacity: 1 !important;
+        }
+    `;
+    document.head.appendChild(style);
+}
+
+function renderActionPrompts() {
+    $('.nnb-action-prompts').remove();
+    const s = settings();
+    if (!s.enabled || !s.actionPrompts) return;
+    const c = ctx();
+    const chat = c.chat;
+    if (!chat || !chat.length) return;
+
+    ensureActionStyles();
+
+    const lastIdx = chat.length - 1;
+    const lastMsg = chat[lastIdx];
+    if (!lastMsg || lastMsg.is_user) return;
+
+    if (!Array.isArray(lastMsg.extra?.actions) || !lastMsg.extra.actions.length) {
+        if (typeof lastMsg.mes === 'string') {
+            const m = lastMsg.mes.match(/(?:<!--\s*ACTIONS|\[\s*(?:ACTIONS|Варианты действий)|(?:\n|^)\s*ACTIONS)\s*[:：]\s*([\s\S]+?)(?:-->|\]|\n\n|$)/i);
+            if (m) {
+                lastMsg.extra = lastMsg.extra || {};
+                lastMsg.extra.actions = parseActionPrompts(m[1]);
+            }
+        }
+    }
+
+    if (!Array.isArray(lastMsg.extra?.actions) || !lastMsg.extra.actions.length) return;
+
+    let mesEl = $(`#chat .mes[mesid="${lastIdx}"]`);
+    if (!mesEl.length) mesEl = $('#chat .mes').last();
+    if (!mesEl.length) return;
+
+    const container = $('<div class="nnb-action-prompts"></div>');
+    container.css({
+        'display': 'block',
+        'width': '100%',
+        'max-width': '100%',
+        'box-sizing': 'border-box',
+        'clear': 'both',
+        'margin': '14px 0 6px 0',
+        'padding': '10px 14px'
+    });
+
+    const head = $('<div class="nnb-action-prompts-head"><i class="fa-solid fa-lightbulb"></i> Что сделать дальше:</div>');
+    container.append(head);
+
+    const list = $('<div class="nnb-action-chips"></div>');
+    list.css({
+        'display': 'flex',
+        'flex-direction': 'column',
+        'gap': '8px',
+        'width': '100%',
+        'box-sizing': 'border-box'
+    });
+
+    lastMsg.extra.actions.forEach((actText) => {
+        const chip = $('<div class="nnb-action-chip" tabindex="0"></div>').text(actText);
+        chip.css({
+            'display': 'block',
+            'width': '100%',
+            'box-sizing': 'border-box',
+            'padding': '10px 14px',
+            'border-radius': '10px',
+            'white-space': 'normal',
+            'word-break': 'normal',
+            'overflow-wrap': 'break-word',
+            'text-align': 'left',
+            'line-height': '1.4',
+            'cursor': 'pointer'
+        });
+        chip.attr('title', 'Нажми, чтобы выбрать этот вариант');
+
+        chip.on('click', function(e) {
+            e.stopPropagation();
+            chooseActionPrompt(actText, false);
+        });
+
+        list.append(chip);
+    });
+
+    const customChip = $('<div class="nnb-action-chip nnb-action-custom" tabindex="0"><i class="fa-solid fa-pen"></i> <span>Свой вариант</span></div>');
+    customChip.css({
+        'display': 'flex',
+        'flex-direction': 'row',
+        'align-items': 'center',
+        'gap': '10px',
+        'width': '100%',
+        'box-sizing': 'border-box',
+        'padding': '10px 14px',
+        'border-radius': '10px',
+        'white-space': 'normal',
+        'cursor': 'pointer'
+    });
+    customChip.attr('title', 'Написать свой вариант действия');
+    customChip.on('click', function(e) {
+        e.stopPropagation();
+        const textarea = $('#send_textarea');
+        textarea.focus();
+        try {
+            textarea[0]?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+        } catch (err) { /* ignore */ }
+    });
+    list.append(customChip);
+
+    container.append(list);
+
+    const textEl = mesEl.find('.mes_text').first();
+    const mesBlock = mesEl.find('.mes_block').first();
+    if (textEl.length) {
+        textEl.append(container);
+    } else if (mesBlock.length) {
+        mesBlock.append(container);
+    } else {
+        mesEl.append(container);
+    }
+}
+
+let actionPromptsTimer = null;
+function renderActionPromptsSoon() {
+    clearTimeout(actionPromptsTimer);
+    actionPromptsTimer = setTimeout(renderActionPrompts, 100);
+}
+
 async function processReplyTags() {
     const st = store();
     const s = settings();
-    if (!st || !s.enabled || !st.direction.time) return false;
+    if (!st || !s.enabled) return false;
     const c = ctx();
-    const id = c.chat.length - 1;
-    const msg = c.chat[id];
-    if (!msg || msg.is_user || typeof msg.mes !== 'string' || !msg.mes.includes('<!--')) return false;
-    const res = {};
-    if (!applyReplyTags(st, msg.mes, res)) return false;
-    msg.mes = stripTags(msg.mes);
-    try {
-        if (typeof c.updateMessageBlock === 'function') c.updateMessageBlock(id, msg);
-        await c.saveChat();
-    } catch (e) { /* метки невидимы, можно оставить */ }
-    const parts = holidaySummary(res);
-    if (res.timeMoved) parts.unshift(`📅 прошло ${daysWord(res.timeMoved)} → ${formatDate(st.time.date)}`);
-    if (parts.length && s.showToasts) toastr.success(parts.map(escapeHtml).join('<br>'), 'Блокнот рассказчика', { escapeHtml: false, timeOut: 8000 });
-    await c.saveMetadata();
-    if (res.timeMoved) await runHolidayStep();
-    return true;
+    const chat = c.chat;
+    if (!chat || !chat.length) return false;
+    const id = chat.length - 1;
+    const msg = chat[id];
+    if (!msg || msg.is_user || typeof msg.mes !== 'string') return false;
+
+    let modified = false;
+
+    // 1. Process ACTIONS tags (<!--ACTIONS: ...-->, [ACTIONS: ...], or ACTIONS: ...)
+    const actMatch = msg.mes.match(/<!--\s*ACTIONS\s*[:：]\s*([\s\S]+?)\s*-->/i)
+        || msg.mes.match(/\[\s*(?:ACTIONS|Варианты действий)\s*[:：]\s*([\s\S]+?)\s*\]/i)
+        || msg.mes.match(/(?:^|\n)\s*(?:<!--\s*)?ACTIONS\s*[:：]\s*([\s\S]+?)(?:-->|$)/i);
+    if (actMatch) {
+        const parsed = parseActionPrompts(actMatch[1]);
+        if (parsed.length) {
+            msg.extra = msg.extra || {};
+            msg.extra.actions = parsed;
+            modified = true;
+        }
+        msg.mes = msg.mes
+            .replace(/<!--\s*ACTIONS\s*[:：][\s\S]+?\s*-->/gi, '')
+            .replace(/\[\s*(?:ACTIONS|Варианты действий)\s*[:：][\s\S]+?\s*\]/gi, '')
+            .replace(/(?:^|\n)\s*(?:<!--\s*)?ACTIONS\s*[:：][\s\S]+?(?:-->|$)/gi, '')
+            .trimEnd();
+    }
+
+    // 2. Process time/holiday tags
+    if (st.direction.time && msg.mes.includes('<!--')) {
+        const res = {};
+        if (applyReplyTags(st, msg.mes, res)) {
+            msg.mes = stripTags(msg.mes);
+            modified = true;
+            const parts = holidaySummary(res);
+            if (res.timeMoved) parts.unshift(`📅 прошло ${daysWord(res.timeMoved)} → ${formatDate(st.time.date)}`);
+            if (parts.length && s.showToasts) toastr.success(parts.map(escapeHtml).join('<br>'), 'Блокнот рассказчика', { escapeHtml: false, timeOut: 8000 });
+            await c.saveMetadata();
+            if (res.timeMoved) await runHolidayStep();
+        }
+    }
+
+    if (modified) {
+        try {
+            if (typeof c.updateMessageBlock === 'function') c.updateMessageBlock(id, msg);
+            await c.saveChat();
+        } catch (e) { /* ignore */ }
+        renderActionPromptsSoon();
+        return true;
+    }
+    return false;
+}
+
+// Подсказка гардероба: игрок сам пишет, что выбирает одежду
+const OUTFIT_HINT_RE = /(наряд|что (бы )?надеть|во что (бы )?(одеться|нарядиться)|переоде(ться|нусь|ваюсь|лась)|выбира\S* (одежд|платье|образ|костюм|что надеть)|гардероб|собира\S* на (свидание|вечеринк|ужин|собеседовани|бал|праздник|вечер))/i;
+let outfitHintPending = false;
+function onMessageSentHint() {
+    const c = ctx();
+    const st = store();
+    const msg = c.chat?.[c.chat.length - 1];
+    outfitHintPending = !!(settings().enabled && st?.direction?.wardrobe && !st.wardrobe.active && msg?.is_user && OUTFIT_HINT_RE.test(String(msg.mes || '')));
+}
+function showOutfitHint() {
+    if (!outfitHintPending) return;
+    outfitHintPending = false;
+    const st = store();
+    if (!st || st.wardrobe.active) return;
+    const len = ctx().chat?.length ?? 0;
+    if (st.wardrobe.lastHintAt && len - st.wardrobe.lastHintAt < 10) return;
+    st.wardrobe.lastHintAt = len;
+    toastr.info('Похоже, пора выбрать наряд. Нажми, чтобы подобрать образы.', '👗 Гардероб', { timeOut: 15000, extendedTimeOut: 5000, onclick: () => startWardrobe() });
 }
 
 function clearFastForward() {
@@ -2168,6 +4534,8 @@ function clearFastForward() {
 
 async function onMessageReceived() {
     clearFastForward();
+    clearGachaPending();
+    setTimeout(showOutfitHint, 1500);
     try { await processReplyTags(); } catch (e) { console.error('[npc_notebook] reply tags', e); }
     onMessageReceivedThink();
 }
@@ -2194,27 +4562,91 @@ const PANEL_HTML = `
       <b>Блокнот рассказчика</b>
       <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
     </div>
-    <div class="inline-drawer-content" id="nnb_panel">
+    <div class="inline-drawer-content nnb-scope" id="nnb_panel">
       <label class="checkbox_label"><input type="checkbox" id="nnb_enabled"> Включено</label>
-      <label class="checkbox_label"><input type="checkbox" id="nnb_toasts"> Уведомлять о новых записях</label>
-      <label class="checkbox_label"><input type="checkbox" id="nnb_spoilers"> Не подглядывать (размыть текст записей)</label>
-      <label class="checkbox_label"><input type="checkbox" id="nnb_ff_on"> Кнопка ⏩ «Дальше» у поля ввода</label>
-
-      <div class="nnb-row"><label for="nnb_interval">Думать каждые N сообщений</label><input type="number" min="2" max="200" class="text_pole" id="nnb_interval"></div>
-      <div class="nnb-row"><label for="nnb_depth">Глубина вставки блокнота</label><input type="number" min="0" max="50" class="text_pole" id="nnb_depth"></div>
-      <div class="nnb-row"><label for="nnb_max">Максимум активных записей</label><input type="number" min="1" max="50" class="text_pole" id="nnb_max"></div>
-      <div class="nnb-row"><label for="nnb_max_int">Максимум активных тайн</label><input type="number" min="1" max="20" class="text_pole" id="nnb_max_int"></div>
-      <div class="nnb-row"><label for="nnb_min_stim">Стимулов для сдвига характера</label><input type="number" min="1" max="10" class="text_pole" id="nnb_min_stim"></div>
-      <label class="checkbox_label"><input type="checkbox" id="nnb_events"> Праздничные события (традиции и медали)</label>
-      <div class="nnb-row"><label for="nnb_lead">За сколько дней напоминать о праздниках</label><input type="number" min="1" max="7" class="text_pole" id="nnb_lead"></div>
-      <div class="nnb-row"><label for="nnb_role">Роль вставки</label>
-        <select class="text_pole" id="nnb_role">
-          <option value="0">system</option>
-          <option value="1">user</option>
-          <option value="2">assistant</option>
-        </select>
+      <div class="nnb-buttons">
+        <div class="menu_button" id="nnb_open_book"><i class="fa-solid fa-book-open"></i> Открыть блокнот</div>
       </div>
+      <div class="nnb-status"></div>
+      <label class="checkbox_label"><input type="checkbox" id="nnb_toasts"> Уведомлять о новых записях</label>
+      <label class="checkbox_label"><input type="checkbox" id="nnb_spoilers"> Не подглядывать (размыть записи)</label>
+      <label class="checkbox_label"><input type="checkbox" id="nnb_ff_on"> Кнопка ⏩ «Дальше» у поля ввода</label>
+      <label class="checkbox_label"><input type="checkbox" id="nnb_accents"> Штрихи к образу и шкатулка</label>
+      <label class="checkbox_label"><input type="checkbox" id="nnb_action_prompts"> 💡 Подсказки действий в конце сообщений</label>
 
+      <details class="nnb-set">
+        <summary>🎨 Картинки</summary>
+        <label class="checkbox_label"><input type="checkbox" id="nnb_ward_img"> Рисовать образы в гардеробе</label>
+        <select class="text_pole" id="nnb_img_src" title="Чем рисовать"></select>
+        <div id="nnb_img_api" style="display:none">
+          <input type="password" class="text_pole" id="nnb_img_key" placeholder="Ключ (sk-…)" autocomplete="off">
+          <details>
+            <summary>Адрес и модель</summary>
+            <input type="text" class="text_pole" id="nnb_img_base" placeholder="https://api.linkapi.ai/v1">
+            <input type="text" class="text_pole" id="nnb_img_model" placeholder="gpt-image-2-c">
+          </details>
+        </div>
+        <select class="text_pole" id="nnb_img_orient" title="Формат сцен и образов">
+          <option value="portrait">Вертикальные картинки</option>
+          <option value="landscape">Горизонтальные картинки</option>
+        </select>
+        <label class="checkbox_label"><input type="checkbox" id="nnb_img_ref"> Аватар персоны как образец лица</label>
+      </details>
+
+      <details class="nnb-set">
+        <summary>⚙️ Тонкая настройка</summary>
+        <div class="nnb-row"><label for="nnb_interval">Думать каждые N сообщений</label><input type="number" min="2" max="200" class="text_pole" id="nnb_interval"></div>
+        <div class="nnb-row"><label for="nnb_depth">Глубина вставки блокнота</label><input type="number" min="0" max="50" class="text_pole" id="nnb_depth"></div>
+        <div class="nnb-row"><label for="nnb_max">Максимум активных записей</label><input type="number" min="1" max="50" class="text_pole" id="nnb_max"></div>
+        <div class="nnb-row"><label for="nnb_max_int">Максимум активных тайн</label><input type="number" min="1" max="20" class="text_pole" id="nnb_max_int"></div>
+        <div class="nnb-row"><label for="nnb_min_stim">Стимулов для сдвига характера</label><input type="number" min="1" max="10" class="text_pole" id="nnb_min_stim"></div>
+        <label class="checkbox_label"><input type="checkbox" id="nnb_events"> Праздничные события (традиции и медали)</label>
+        <div class="nnb-row"><label for="nnb_lead">За сколько дней напоминать о праздниках</label><input type="number" min="1" max="7" class="text_pole" id="nnb_lead"></div>
+        <div class="nnb-row"><label for="nnb_role">Роль вставки</label>
+          <select class="text_pole" id="nnb_role">
+            <option value="0">system</option>
+            <option value="1">user</option>
+            <option value="2">assistant</option>
+          </select>
+        </div>
+        <details>
+          <summary>Промпт размышления</summary>
+          <small>{{notes}} — текущие записи, {{user}} и {{char}} работают как обычно.</small>
+          <textarea class="text_pole" id="nnb_think_prompt" rows="10"></textarea>
+          <div class="menu_button" id="nnb_reset_think">Вернуть стандартный</div>
+        </details>
+        <details>
+          <summary>Шаблон вставки в чат</summary>
+          <textarea class="text_pole" id="nnb_inject_prompt" rows="5"></textarea>
+          <div class="menu_button" id="nnb_reset_inject">Вернуть стандартный</div>
+        </details>
+      </details>
+    </div>
+  </div>
+</div>`;
+
+// Сам блокнот — отдельное окно во весь экран с вкладками
+const BOOK_TABS = [
+    { id: 'plot', icon: '🧭', title: 'Сюжет' },
+    { id: 'ideas', icon: '🪶', title: 'Задумки' },
+    { id: 'heroes', icon: '👥', title: 'Герои', need: d => d.npcs || d.arcs },
+    { id: 'ward', icon: '👗', title: 'Гардероб', need: d => d.wardrobe },
+    { id: 'box', icon: '🎁', title: 'Шкатулка', need: d => d.gacha || (d.wardrobe && !!settings().accents) },
+    { id: 'map', icon: '🗺', title: 'Карта', need: d => d.map },
+    { id: 'time', icon: '📅', title: 'Время', need: d => d.time },
+    { id: 'album', icon: '🖼', title: 'Альбом' },
+];
+const BOOK_HTML = `
+<div id="nnb_book" class="nnb-scope nnb-book" style="display:none">
+  <div class="nnb-book-head">
+    <b>📓 Блокнот</b>
+    <span class="nnb-status"></span>
+    <div class="menu_button nnb-book-think" id="nnb_think_now" title="Подумать сейчас"><i class="fa-solid fa-feather"></i></div>
+    <div class="menu_button nnb-book-close" title="Закрыть"><i class="fa-solid fa-xmark"></i></div>
+  </div>
+  <div class="nnb-tabs">${BOOK_TABS.map(t => `<div class="nnb-tab" data-tab="${t.id}">${t.icon} ${t.title}</div>`).join('')}</div>
+  <div class="nnb-book-body">
+    <div class="nnb-pane" data-pane="plot">
       <div class="nnb-direction">
         <b>Направление этого чата</b>
         <small>Если ничего не выбрано, модель придумывает свободно.</small>
@@ -2226,60 +4658,101 @@ const PANEL_HTML = `
             <option value="or">По одному (ИЛИ)</option>
           </select>
         </div>
-        <textarea class="text_pole nnb-insp" id="nnb_inspiration" rows="2" placeholder="Источник вдохновения: тайтл, тема, настроение…"></textarea>
-        <textarea class="text_pole nnb-insp" id="nnb_avoid" rows="2" placeholder="Чего избегать: например, документы, бюрократия, службы отлова, угрозы извне"></textarea>
         <textarea class="text_pole nnb-insp" id="nnb_lines" rows="2" placeholder="Заявленные линии — что обязательно должно быть в истории: например, любовный треугольник Вика, Годжо и Гето"></textarea>
-        <label class="checkbox_label"><input type="checkbox" id="nnb_intrigues_on"> Тайны и интриги в этом чате</label>
-        <label class="checkbox_label"><input type="checkbox" id="nnb_npcs_on"> Карточки NPC в этом чате</label>
-        <label class="checkbox_label"><input type="checkbox" id="nnb_arcs_on"> Развитие персонажей в этом чате</label>
-        <label class="checkbox_label"><input type="checkbox" id="nnb_time_on"> Время и место в этом чате</label>
-        <label class="checkbox_label"><input type="checkbox" id="nnb_wardrobe_on"> Гардероб в этом чате</label>
       </div>
-
-      <div class="nnb-status" id="nnb_status"></div>
+      <div class="nnb-direction">
+        <b>Что ведёт блокнот в этом чате</b>
+        <label class="checkbox_label"><input type="checkbox" id="nnb_intrigues_on"> 🔒 Тайны и интриги</label>
+        <label class="checkbox_label"><input type="checkbox" id="nnb_npcs_on"> 👥 Карточки NPC</label>
+        <label class="checkbox_label"><input type="checkbox" id="nnb_arcs_on"> 🌱 Развитие персонажей</label>
+        <label class="checkbox_label"><input type="checkbox" id="nnb_time_on"> 📅 Время и место</label>
+        <label class="checkbox_label"><input type="checkbox" id="nnb_wardrobe_on"> 👗 Гардероб</label>
+        <label class="checkbox_label"><input type="checkbox" id="nnb_gacha_on"> 🎰 Находки (гача)</label>
+        <label class="checkbox_label"><input type="checkbox" id="nnb_map_on"> 🗺 Карта</label>
+      </div>
       <div class="nnb-buttons">
-        <div class="menu_button" id="nnb_think_now"><i class="fa-solid fa-feather"></i> Подумать сейчас</div>
-        <div class="menu_button" id="nnb_ff_panel"><i class="fa-solid fa-forward"></i> Дальше</div>
-        <div class="menu_button" id="nnb_add"><i class="fa-solid fa-plus"></i> Добавить запись</div>
         <div class="menu_button" id="nnb_clear"><i class="fa-solid fa-broom"></i> Очистить блокнот</div>
       </div>
-
-      <div id="nnb_wardrobe_box"></div>
-      <div id="nnb_time_box"></div>
-      <div id="nnb_list"></div>
-      <div id="nnb_intrigue_list"></div>
-      <div id="nnb_npc_list"></div>
-      <div id="nnb_arc_list"></div>
-
-      <details>
-        <summary>Промпт размышления</summary>
-        <small>{{notes}} — текущие записи, {{user}} и {{char}} работают как обычно.</small>
-        <textarea class="text_pole" id="nnb_think_prompt" rows="10"></textarea>
-        <div class="menu_button" id="nnb_reset_think">Вернуть стандартный</div>
-      </details>
-      <details>
-        <summary>Шаблон вставки в чат</summary>
-        <textarea class="text_pole" id="nnb_inject_prompt" rows="5"></textarea>
-        <div class="menu_button" id="nnb_reset_inject">Вернуть стандартный</div>
-      </details>
     </div>
+    <div class="nnb-pane" data-pane="ideas">
+      <div id="nnb_list"></div>
+      <div class="nnb-buttons"><div class="menu_button" id="nnb_add"><i class="fa-solid fa-plus"></i> Добавить задумку</div></div>
+      <div id="nnb_intrigue_list"></div>
+      <div id="nnb_extra_list"></div>
+    </div>
+    <div class="nnb-pane" data-pane="heroes"><div id="nnb_npc_list"></div><div id="nnb_arc_list"></div></div>
+    <div class="nnb-pane" data-pane="ward"><div id="nnb_wardrobe_box"></div></div>
+    <div class="nnb-pane" data-pane="box"><div id="nnb_box_box"></div></div>
+    <div class="nnb-pane" data-pane="map"><div id="nnb_map_box"></div></div>
+    <div class="nnb-pane" data-pane="time"><div id="nnb_time_box"></div></div>
+    <div class="nnb-pane" data-pane="album"><div id="nnb_album_box"></div></div>
   </div>
 </div>`;
 
+let bookTab = 'plot';
+function bookTabs() {
+    const d = store()?.direction || {};
+    for (const t of BOOK_TABS) $(`#nnb_book .nnb-tab[data-tab="${t.id}"]`).toggle(!t.need || !!t.need(d));
+    const cur = BOOK_TABS.find(t => t.id === bookTab);
+    if (cur?.need && !cur.need(d)) bookTab = 'plot';
+    $('#nnb_book .nnb-tab').each(function () { $(this).toggleClass('active', $(this).data('tab') === bookTab); });
+    $('#nnb_book .nnb-pane').each(function () { $(this).toggle($(this).data('pane') === bookTab); });
+}
+function openBook(tab) {
+    if (!store()) return toastr.warning('Сначала открой чат', 'Блокнот рассказчика');
+    if (tab) bookTab = tab;
+    let book = $('#nnb_book');
+    if (!book.length) { $('body').append(BOOK_HTML); book = $('#nnb_book'); bindBook(); }
+    if (!book.parent().is('body')) book.appendTo('body'); // окно должно лежать прямо в body, иначе его закроют панели Таверны
+    book.css({ display: 'flex', 'background-color': solidThemeColor() });
+    safeRender('направление', renderDirection);
+    safeRender('блокнот', renderPanel);
+    bookTabs();
+    $('#nnb_book .nnb-book-body').scrollTop(0);
+}
+// цвет темы бывает полупрозрачным — для окна блокнота берём его без прозрачности
+function solidThemeColor() {
+    try {
+        const raw = getComputedStyle(document.documentElement).getPropertyValue('--SmartThemeBlurTintColor').trim();
+        const m = raw.match(/rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i);
+        if (m) return `rgb(${Math.round(m[1])}, ${Math.round(m[2])}, ${Math.round(m[3])})`;
+        if (/^#[0-9a-f]{6}/i.test(raw)) return raw.slice(0, 7);
+    } catch (e) { /* ignore */ }
+    return '#1e1b26';
+}
+// ошибка в одном разделе не должна ломать весь блокнот — показываем, где именно
+const renderErrors = new Set();
+function safeRender(name, fn, ...args) {
+    try { fn(...args); } catch (e) {
+        console.error(`[npc_notebook] ${name}`, e);
+        if (!renderErrors.has(name)) {
+            renderErrors.add(name);
+            toastr.error(`Раздел «${escapeHtml(name)}» не отрисовался: ${escapeHtml(e?.message || e)}`, 'Блокнот рассказчика', { escapeHtml: false, timeOut: 15000 });
+        }
+    }
+}
+function bindBook() {
+    $('#nnb_book .nnb-book-close').off('click').on('click', closeBook);
+    $('#nnb_book').off('click', '.nnb-tab').on('click', '.nnb-tab', function () { bookTab = String($(this).data('tab')); bookTabs(); $('#nnb_book .nnb-book-body').scrollTop(0); });
+}
+function closeBook() {
+    $('#nnb_book').hide();
+}
+
 function setStatus(text) {
     if (text) {
-        $('#nnb_status').text(text);
+        $('.nnb-status').text(text);
         return;
     }
     const st = store();
     const s = settings();
     if (!st) {
-        $('#nnb_status').text('Чат не открыт');
+        $('.nnb-status').text('Чат не открыт');
         return;
     }
     const len = ctx().chat?.length ?? 0;
     const left = Math.max(0, (Number(s.interval) || 12) - (len - st.lastThinkAt));
-    $('#nnb_status').text(s.enabled ? `До следующего размышления: ${left} сообщ.` : 'Выключено');
+    $('.nnb-status').text(s.enabled ? `До размышления: ${left} сообщ.` : 'Выключено');
 }
 
 async function askText(title, initial = '') {
@@ -2293,14 +4766,17 @@ async function askText(title, initial = '') {
 
 function renderPanel() {
     const s = settings();
-    $('#nnb_panel').toggleClass('nnb-spoiler', !!s.hideSpoilers);
+    $('.nnb-scope').toggleClass('nnb-spoiler', !!s.hideSpoilers);
     const list = $('#nnb_list').empty();
+    const extra = $('#nnb_extra_list').empty();
     const st = store();
     if (!busy) setStatus('');
-    if (!st) return;
+    if (!st) { closeBook(); return; }
+    bookTabs();
 
+    list.append($('<div class="nnb-subhead"></div>').text(`🪶 Задумки (${st.notes.length})`));
     if (!st.notes.length) {
-        list.append('<div class="nnb-empty">Блокнот пуст. Модель сама начнёт записывать задумки, или нажми «Подумать сейчас».</div>');
+        list.append('<div class="nnb-empty">Пока пусто. Модель сама начнёт записывать задумки, или нажми 🪶 вверху, чтобы подумать сейчас.</div>');
     }
     const len = ctx().chat?.length ?? 0;
 
@@ -2331,11 +4807,14 @@ function renderPanel() {
         list.append(row);
     }
 
-    renderWardrobe(st);
-    renderTime(st);
-    renderIntrigues(st, len);
-    renderNpcs(st);
-    renderArcs(st);
+    safeRender('гардероб', renderWardrobe, st);
+    safeRender('шкатулка', renderBox, st);
+    safeRender('карта', renderMap, st);
+    safeRender('альбом', renderAlbum, st);
+    safeRender('время', renderTime, st);
+    safeRender('тайны', renderIntrigues, st, len);
+    safeRender('NPC', renderNpcs, st);
+    safeRender('развитие', renderArcs, st);
 
     if (st.archive.length) {
         const det = $('<details><summary></summary><div></div></details>');
@@ -2347,7 +4826,7 @@ function renderPanel() {
             box.append($('<div class="nnb-note nnb-archived"><div class="nnb-text"></div></div>')
                 .find('.nnb-text').text(`${mark} ${num}${n.tag ? ` [${n.tag}]` : ''} ${n.text}`).end());
         }
-        list.append(det);
+        extra.append(det);
     }
 
     if (st.rejected.length) {
@@ -2357,13 +4836,13 @@ function renderPanel() {
             det.find('div').first().append($('<div class="nnb-note nnb-archived"><div class="nnb-text"></div></div>').find('.nnb-text').text(t).end());
         }
         det.find('.menu_button').on('click', async () => { st.rejected = []; await commit(); });
-        list.append(det);
+        extra.append(det);
     }
 
     if (st.lastRaw !== undefined && (st.lastRaw || st.lastThinkAt)) {
         const det = $('<details><summary>Последний ответ модели</summary><pre class="nnb-raw"></pre></details>');
         det.find('pre').text(st.lastRaw || '(пустой ответ)');
-        list.append(det);
+        extra.append(det);
     }
 }
 
@@ -2397,10 +4876,10 @@ function renderDirection() {
     $('#nnb_npcs_on').prop('checked', !!st?.direction.npcs).prop('disabled', !enabled);
     $('#nnb_arcs_on').prop('checked', !!st?.direction.arcs).prop('disabled', !enabled);
     $('#nnb_time_on').prop('checked', !!st?.direction.time).prop('disabled', !enabled);
-    $('#nnb_inspiration').val(st?.direction.inspiration ?? '').prop('disabled', !enabled);
-    $('#nnb_avoid').val(st?.direction.avoid ?? '').prop('disabled', !enabled);
     $('#nnb_lines').val(st?.direction.lines ?? '').prop('disabled', !enabled);
     $('#nnb_wardrobe_on').prop('checked', !!st?.direction.wardrobe).prop('disabled', !enabled);
+    $('#nnb_gacha_on').prop('checked', !!st?.direction.gacha).prop('disabled', !enabled);
+    $('#nnb_map_on').prop('checked', !!st?.direction.map).prop('disabled', !enabled);
 }
 
 function renderIntrigues(st, len) {
@@ -2456,6 +4935,75 @@ function renderIntrigues(st, len) {
     box.append(addBtn);
 }
 
+
+async function promptNpcAvatar(n) {
+    const st = store();
+    if (!st || !n) return;
+    const el = $('<div class="nnb-pop"></div>');
+    el.append($('<h3></h3>').text(`🖼 Внешность: ${n.name}`));
+    el.append($('<div class="nnb-pop-sub"></div>').text('Картинка-референс лица для сцен (🎬). Когда этот персонаж будет в кадре, генератор возьмёт её как образец внешности.'));
+
+    if (n.avatar) {
+        const preview = $('<div style="display:flex; justify-content:center; margin:12px 0;"></div>');
+        preview.append($('<img alt="" style="max-width:180px; max-height:180px; border-radius:12px; object-fit:cover; border:2px solid var(--SmartThemeQuoteColor, #8b78c4); box-shadow:0 4px 12px rgba(0,0,0,0.3);">').attr('src', n.avatar));
+        el.append(preview);
+    }
+
+    const fileInput = $('<input type="file" accept="image/*" style="display:none">');
+    const uploadBtn = $('<div class="menu_button"><i class="fa-solid fa-upload"></i> Загрузить с устройства</div>');
+    uploadBtn.on('click', () => fileInput.trigger('click'));
+
+    fileInput.on('change', async function() {
+        const file = this.files?.[0];
+        if (!file) return;
+        if (file.size > 8 * 1024 * 1024) {
+            toastr.warning('Файл слишком большой (максимум 8 МБ)', 'Внешность NPC');
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = async () => {
+            const dataUrl = String(reader.result || '');
+            if (dataUrl) {
+                const savedPath = await storeImage(dataUrl);
+                n.avatar = savedPath;
+                closePopupOf(el);
+                await commit();
+                toastr.success(`Референс внешности для «${escapeHtml(n.name)}» сохранён!`, '👥 NPC', { escapeHtml: false });
+            }
+        };
+        reader.readAsDataURL(file);
+    });
+
+    el.append(fileInput);
+
+    const urlRow = $('<div class="nnb-pop-row" style="margin-top:12px;"><input type="text" class="text_pole" placeholder="Или прямая ссылка на картинку (https://…)" style="flex:1;"><div class="menu_button"><i class="fa-solid fa-link"></i> Ок</div></div>');
+    if (n.avatar && !n.avatar.startsWith('data:')) urlRow.find('input').val(n.avatar);
+    urlRow.find('.menu_button').on('click', async () => {
+        const url = urlRow.find('input').val().trim();
+        if (!url) return;
+        n.avatar = url;
+        closePopupOf(el);
+        await commit();
+        toastr.success(`Ссылка на внешность для «${escapeHtml(n.name)}» сохранена!`, '👥 NPC', { escapeHtml: false });
+    });
+
+    const actRow = $('<div class="nnb-pop-row nnb-pop-links" style="margin-top:14px;"></div>');
+    actRow.append(uploadBtn);
+    if (n.avatar) {
+        const removeBtn = $('<div class="menu_button"><i class="fa-solid fa-trash"></i> Удалить референс</div>');
+        removeBtn.on('click', async () => {
+            delete n.avatar;
+            closePopupOf(el);
+            await commit();
+            toastr.info(`Референс для «${escapeHtml(n.name)}» удалён`, '👥 NPC', { escapeHtml: false });
+        });
+        actRow.append(removeBtn);
+    }
+    el.append(urlRow, actRow);
+
+    await openPopup(el);
+}
+
 function renderNpcs(st) {
     const root = $('#nnb_npc_list').empty();
     if (!st.direction.npcs) return;
@@ -2468,20 +5016,57 @@ function renderNpcs(st) {
     for (const n of st.npcs) {
         const row = $(`
           <div class="nnb-note nnb-npc">
-            <div class="nnb-meta"></div>
-            <div class="nnb-npc-text"></div>
-            <div class="nnb-npc-status"></div>
+            <div class="nnb-npc-header" style="display:flex; flex-direction:row; align-items:flex-start; gap:10px;">
+              <div class="nnb-npc-details" style="flex:1; min-width:0;">
+                <div class="nnb-meta"></div>
+                <div class="nnb-npc-text"></div>
+                <div class="nnb-npc-status"></div>
+              </div>
+            </div>
             <div class="nnb-actions">
               <i class="fa-solid nnb-lock"></i>
+              <i class="fa-solid fa-image nnb-npc-avatar-btn" title="Внешность (картинка-референс)"></i>
               <i class="fa-solid fa-pen" title="Изменить карточку"></i>
               <i class="fa-solid fa-comment-dots" title="Изменить состояние"></i>
               <i class="fa-solid fa-trash" title="Удалить"></i>
             </div>
           </div>`);
-        row.find('.nnb-meta').text(n.name + (n.locked ? ' · правлено вручную' : ''));
+        if (n.avatar) {
+            const av = $('<img class="nnb-npc-avatar" alt="">').attr('src', n.avatar).attr('title', `Внешность ${n.name} (нажми, чтобы изменить)`);
+            av.css({
+                'width': '46px',
+                'height': '46px',
+                'border-radius': '10px',
+                'object-fit': 'cover',
+                'flex-shrink': '0',
+                'cursor': 'pointer',
+                'border': '1.5px solid var(--SmartThemeQuoteColor, #8b78c4)',
+                'margin-top': '2px'
+            });
+            av.on('click', () => promptNpcAvatar(n));
+            row.find('.nnb-npc-header').prepend(av);
+        }
+        row.find('.nnb-npc-avatar-btn')
+            .css(n.avatar ? { color: 'var(--SmartThemeQuoteColor, #8b78c4)' } : {})
+            .attr('title', n.avatar ? 'Изменить/удалить референс внешности' : 'Задать референс внешности (картинку)')
+            .on('click', () => promptNpcAvatar(n));
+        row.find('.nnb-meta').text(n.name + (n.locked ? ' · правлено вручную' : '') + (n.avatar ? ' · 🖼 реф' : ''));
         row.find('.nnb-npc-text').text(n.card);
         if (n.status) row.find('.nnb-npc-status').text('Сейчас: ' + n.status);
         else row.find('.nnb-npc-status').remove();
+        const rels = (st.relationships || []).filter(r => normName(r.a) === normName(n.name) || normName(r.b) === normName(n.name));
+        if (rels.length) {
+            const relTexts = rels.map(r => {
+                const other = normName(r.a) === normName(n.name) ? r.b : r.a;
+                const arr = r.arrow === '→' ? (normName(r.a) === normName(n.name) ? '→' : '←') : '↔';
+                return `${arr} ${other}${r.type ? ` (${r.type})` : ''}`;
+            });
+            row.append($('<div class="nnb-npc-status nnb-rel-chips"></div>').text('Связи: ' + relTexts.join(' · ')));
+        }
+        const gifts = (st.wardrobe?.box || []).filter(x => normName(x.giftedTo) === normName(n.name));
+        if (gifts.length) {
+            row.append($('<div class="nnb-npc-status nnb-gift-chips"></div>').text('🎁 Подарки от игрока: ' + gifts.map(g => `«${g.title}»`).join(', ')));
+        }
         row.find('.nnb-lock')
             .addClass(n.locked ? 'fa-lock' : 'fa-lock-open')
             .attr('title', n.locked ? 'Карточка защищена от модели (нажми, чтобы снять)' : 'Защитить карточку от изменений модели')
@@ -2520,6 +5105,85 @@ function renderNpcs(st) {
         await commit();
     });
     det.append(add);
+
+    // --- Матрица отношений между персонажами ---
+    if (!st.relationships) st.relationships = [];
+    const relDet = $('<details open class="nnb-section"><summary></summary></details>');
+    relDet.find('summary').text(`💞 Отношения и связи (${st.relationships.length})`);
+    if (!st.relationships.length) {
+        relDet.append('<div class="nnb-empty">Пока нет зафиксированных связей. Модель запишет их при размышлении, или добавь вручную.</div>');
+    }
+    for (const r of st.relationships) {
+        const row = $(`
+          <div class="nnb-note nnb-rel">
+            <div class="nnb-meta">
+              <span class="nnb-rel-who"></span>
+              <span class="nnb-rel-type"></span>
+              <span class="nnb-rel-lock-tag"></span>
+            </div>
+            <div class="nnb-npc-text"></div>
+            <div class="nnb-actions">
+              <i class="fa-solid nnb-lock"></i>
+              <i class="fa-solid fa-arrows-rotate" title="Сменить направление (взаимно ↔ / односторонне →)"></i>
+              <i class="fa-solid fa-pen" title="Изменить связь"></i>
+              <i class="fa-solid fa-trash" title="Удалить"></i>
+            </div>
+          </div>`);
+        const arrow = r.arrow || '↔';
+        row.find('.nnb-rel-who').text(`${r.a} ${arrow} ${r.b}`);
+        row.find('.nnb-rel-type').text(r.type ? `[${r.type}]` : '');
+        if (r.locked) row.find('.nnb-rel-lock-tag').text(' · защищено');
+        row.find('.nnb-npc-text').text(r.desc || '');
+        row.find('.nnb-lock')
+            .addClass(r.locked ? 'fa-lock' : 'fa-lock-open')
+            .attr('title', r.locked ? 'Связь защищена от модели (нажми, чтобы снять)' : 'Защитить связь от изменений модели')
+            .on('click', async () => { r.locked = !r.locked; await commit(); });
+        row.find('.fa-arrows-rotate').on('click', async () => {
+            r.arrow = r.arrow === '→' ? '↔' : '→';
+            await commit();
+        });
+        row.find('.fa-pen').on('click', async () => {
+            const who = await askText('Персонажи (например «Лилия ↔ Кайлар» или «Марк → София»)', `${r.a} ${r.arrow || '↔'} ${r.b}`);
+            if (who === null) return;
+            const tp = await askText('Тип связи (дружба, роман, соперничество, родство, подозрение)', r.type || '');
+            if (tp === null) return;
+            const ds = await askText('Суть отношений / что между ними', r.desc || '');
+            if (ds === null) return;
+            const wm = who.match(/^(.+?)\s*(↔|<->|->|→|\+)\s*(.+)$/);
+            if (wm) {
+                r.a = wm[1].trim();
+                r.arrow = (wm[2] === '->' || wm[2] === '→') ? '→' : '↔';
+                r.b = wm[3].trim();
+            }
+            r.type = tp.trim();
+            r.desc = ds.trim();
+            r.locked = true;
+            await commit();
+        });
+        row.find('.fa-trash').on('click', async () => {
+            st.relationships = st.relationships.filter(x => x.id !== r.id);
+            await commit();
+        });
+        relDet.append(row);
+    }
+    const addRel = $('<div class="menu_button"><i class="fa-solid fa-heart-circle-plus"></i> Добавить связь</div>');
+    addRel.on('click', async () => {
+        const who = await askText('Персонажи (например «Лилия ↔ Кайлар» или «Марк → София»)');
+        if (!who || !who.trim()) return;
+        const wm = who.match(/^(.+?)\s*(↔|<->|->|→|\+)\s*(.+)$/);
+        const a = wm ? wm[1].trim() : who.trim();
+        const arrow = (wm && (wm[2] === '->' || wm[2] === '→')) ? '→' : '↔';
+        const b = wm ? wm[3].trim() : '';
+        if (!b) return toastr.warning('Укажи двух персонажей через ↔ или → (например «Алиса ↔ Боб»)', 'Блокнот рассказчика');
+        const tp = await askText('Тип связи (дружба, роман, соперничество, семья, подозрение)', 'дружба');
+        if (tp === null) return;
+        const ds = await askText('Суть отношений / что между ними');
+        if (ds === null) return;
+        st.relationships.push({ id: st.nextRelId++, a, b, arrow, type: tp.trim(), desc: ds.trim(), locked: true, at: ctx().chat.length });
+        await commit();
+    });
+    relDet.append(addRel);
+    root.append(relDet);
 }
 
 function renderArcs(st) {
@@ -2607,6 +5271,64 @@ function renderArcs(st) {
     det.append(add);
 }
 
+
+function handleDateRollback(st, oldDate, newDate) {
+    if (!st || !newDate || !oldDate || newDate >= oldDate) return;
+    ensureHolidayState(st);
+
+    const reopened = [];
+    const keysToDelete = [];
+    for (const key of Object.keys(st.holidayDone || {})) {
+        const [name, start] = key.split('|');
+        if (!start) continue;
+        const holInfo = holidaysFor(st).find(h => h.name === name);
+        const y = Number(start.slice(0, 4));
+        const occ = holInfo ? occurrences(holInfo, y) : { start, end: start };
+        const end = occ ? occ.end : start;
+
+        if (end >= newDate) {
+            keysToDelete.push(key);
+            reopened.push(name);
+            st.medals = (st.medals || []).filter(m => !(m.holiday === name && m.tier === 'anti'));
+            if (Array.isArray(st.time.timeline)) {
+                st.time.timeline = st.time.timeline.filter(e => !(e.text.startsWith(name + ':') && e.text.includes('антимедаль')));
+            }
+            st.traces = (st.traces || []).filter(tr => !tr.text.includes(name));
+            st.memories = (st.memories || []).filter(mem => !mem.text.startsWith(name));
+        }
+    }
+    keysToDelete.forEach(k => delete st.holidayDone[k]);
+
+    if (st.holiday) {
+        if (st.holiday.finished || (reopened.length && st.holiday.start > newDate)) {
+            st.holiday = null;
+        }
+    }
+
+    if (reopened.length) {
+        toastr.info(`Время отмотано назад: праздник «${reopened.join(', ')}» снова доступен, антимедаль снята!`, '📅 Календарь');
+    }
+}
+
+function removeMedal(st, m) {
+    if (!st || !m) return;
+    ensureHolidayState(st);
+    st.medals = (st.medals || []).filter(x => x !== m);
+    for (const key of Object.keys(st.holidayDone || {})) {
+        if (key.startsWith(m.holiday + '|')) {
+            delete st.holidayDone[key];
+        }
+    }
+    if (Array.isArray(st.time.timeline)) {
+        st.time.timeline = st.time.timeline.filter(e => !e.text.includes(`медаль «${m.title}»`) && !(e.text.startsWith(m.holiday + ':') && e.date === m.date));
+    }
+    st.memories = (st.memories || []).filter(mem => !mem.text.startsWith(m.holiday));
+    st.traces = (st.traces || []).filter(tr => !tr.text.includes(m.holiday));
+    if (st.holiday && (st.holiday.name === m.holiday || st.holiday.finished)) {
+        st.holiday = null;
+    }
+}
+
 function renderTime(st) {
     const root = $('#nnb_time_box').empty();
     if (!st.direction.time) return;
@@ -2633,12 +5355,20 @@ function renderTime(st) {
       </div>`);
     dateRow.find('.nnb-date').val(t.date).on('change', async function () {
         const v = $(this).val();
-        if (/^\d{4}-\d{2}-\d{2}$/.test(v)) { t.date = v; await commit(); runHolidayStep(); }
+        if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+            const oldDate = t.date;
+            t.date = v;
+            if (oldDate && v < oldDate) handleDateRollback(st, oldDate, v);
+            await commit();
+            runHolidayStep();
+        }
     });
     dateRow.find('.nnb-shift').on('click', async function () {
         const base = t.date || toIso(new Date());
         const d = Number($(this).data('d') || 0), mo = Number($(this).data('m') || 0);
+        const oldDate = t.date;
         t.date = mo ? addMonths(base, mo) : addDays(base, d);
+        if (oldDate && t.date < oldDate) handleDateRollback(st, oldDate, t.date);
         await commit();
         runHolidayStep();
     });
@@ -2694,9 +5424,42 @@ function renderTime(st) {
         det.append('<div class="nnb-subhead">Ближайшие праздники и события</div>');
         if (!up.length) det.append('<div class="nnb-empty">В ближайшие два месяца ничего нет.</div>');
         for (const h of up) {
-            const row = $('<div class="nnb-npc-status"></div>');
+            const key = h.name + '|' + h.start;
+            const isDone = !!st.holidayDone[key];
+            const row = $('<div class="nnb-task-row" style="margin: 3px 0; justify-content: space-between; align-items: center;"></div>');
             const when = h.ongoing ? 'идёт сейчас' : h.inDays === 0 ? 'сегодня' : `через ${daysWord(h.inDays)}`;
-            row.text(`${formatDate(h.start, false)} — ${h.name} (${when})`);
+            const statusText = isDone ? (st.holidayDone[key] === 'cancelled' ? ' · отменён' : ' · ✓ пройден') : '';
+            const label = $('<div class="nnb-npc-status" style="margin: 0; flex: 1;"></div>').text(`${formatDate(h.start, false)} — ${h.name} (${when})${statusText}`);
+            row.append(label);
+            const act = $('<div class="nnb-actions"></div>');
+            if (isDone) {
+                const rst = $('<i class="fa-solid fa-rotate-left" title="Сбросить статус и запустить праздник снова"></i>');
+                rst.on('click', async () => {
+                    if (!confirm(`Сбросить праздник «${h.name}» и запустить его снова?`)) return;
+                    delete st.holidayDone[key];
+                    st.medals = (st.medals || []).filter(m => !(m.holiday === h.name && m.tier === 'anti'));
+                    if (st.holiday && (st.holiday.name === h.name || st.holiday.finished)) st.holiday = null;
+                    await commit();
+                    runHolidayStep();
+                    toastr.success(`Праздник «${h.name}» сброшен и снова активен!`, '📅 Праздники');
+                });
+                act.append(rst);
+            } else {
+                const del = $('<i class="fa-solid fa-ban" title="Пропустить / отменить это событие"></i>');
+                del.on('click', async () => {
+                    if (!confirm(`Отменить событие «${h.name}»? Оно не будет запускаться.`)) return;
+                    st.holidayDone[key] = 'cancelled';
+                    if (st.holiday && st.holiday.name === h.name) st.holiday = null;
+                    if (h.custom || h.bday) {
+                        st.time.custom = (st.time.custom || []).filter(c => c.name !== h.name && ('День рождения: ' + c.who) !== h.name);
+                    }
+                    await commit();
+                    render();
+                    toastr.info(`Событие «${h.name}» отменено`, '📅 Праздники');
+                });
+                act.append(del);
+            }
+            row.append(act);
             det.append(row);
         }
     }
@@ -2706,7 +5469,17 @@ function renderTime(st) {
         const row = $('<div class="nnb-note"><div class="nnb-npc-text"></div><div class="nnb-actions"><i class="fa-solid fa-trash" title="Удалить"></i></div></div>');
         const [mm, dd] = c.md.split('-').map(Number);
         row.find('.nnb-npc-text').text(`${dd} ${MONTHS_GEN[mm - 1]} — ${c.name}${c.note ? ` (${c.note})` : ''}`);
-        row.find('.fa-trash').on('click', async () => { t.custom.splice(i, 1); await commit(); });
+        row.find('.fa-trash').on('click', async () => {
+            const deleted = t.custom[i];
+            t.custom.splice(i, 1);
+            if (st.holiday && (st.holiday.name === deleted.name || st.holiday.name === ('День рождения: ' + deleted.who))) {
+                st.holiday = null;
+                if (st.holiday && st.holiday.key) delete st.holidayDone[st.holiday.key];
+            }
+            await commit();
+            render();
+            toastr.info(`Дата «${deleted.name}» удалена`, '📅 Праздники');
+        });
         det.append(row);
     });
     const add = $('<div class="menu_button"><i class="fa-solid fa-cake-candles"></i> Добавить свою дату</div>');
@@ -2724,12 +5497,40 @@ function renderTime(st) {
     renderChronicleAndMedals(st, det);
 }
 
+async function cancelHoliday(st, hol) {
+    if (!hol) return;
+    if (st.holiday && (st.holiday.name === hol.name || st.holiday.key === hol.key)) {
+        st.holiday = null;
+    }
+    if (hol.key) {
+        st.holidayDone[hol.key] = 'cancelled';
+    }
+    if (st.time && st.time.custom) {
+        const normHolName = normName(hol.name).replace(/^день рождения:\s*/i, '');
+        st.time.custom = st.time.custom.filter(c => {
+            const normC = normName(c.name).replace(/^день рождения:\s*/i, '');
+            const normWho = normName(c.who || '');
+            return normC !== normHolName && normWho !== normHolName;
+        });
+    }
+    st.medals = (st.medals || []).filter(m => m.holiday !== hol.name);
+    await commit();
+    render();
+}
+
 function renderHolidayCard(st, det) {
     const hol = st.holiday;
     if (!settings().events || !hol || hol.finished || !st.time.date) return;
     const t = tierOf(hol);
-    const box = $('<div class="nnb-note nnb-event"><div class="nnb-event-title"></div><div class="nnb-meta"></div><div class="nnb-tasks"></div></div>');
-    box.find('.nnb-event-title').text(`${hol.emoji} ${hol.name} — ${whenText(hol, st.time.date)}`);
+    const box = $('<div class="nnb-note nnb-event"><div class="nnb-event-title" style="display:flex; justify-content:space-between; align-items:center;"></div><div class="nnb-meta"></div><div class="nnb-tasks"></div></div>');
+    const titleText = $(`<span>${hol.emoji} ${hol.name} — ${whenText(hol, st.time.date)}</span>`);
+    const titleTrash = $('<i class="fa-solid fa-trash" title="Отменить праздник" style="cursor:pointer; opacity:0.7; padding:2px 6px;"></i>');
+    titleTrash.on('click', async () => {
+        if (!confirm(`Отменить событие «${hol.name}»? Оно будет убрано без штрафов и антимедалей.`)) return;
+        await cancelHoliday(st, hol);
+        toastr.info(`Событие «${hol.name}» отменено`, '📅 Праздники');
+    });
+    box.find('.nnb-event-title').append(titleText, titleTrash);
     box.find('.nnb-meta').text(`Традиции: ${t.done} из ${t.total}${hol.tasks.some(x => x.hidden) ? ' · есть секретная задача' : ''}`);
     hol.tasks.forEach((x, i) => {
         const row = $('<div class="nnb-task-row"><label class="checkbox_label nnb-task"><input type="checkbox"><span></span></label><div class="nnb-actions"><i class="fa-solid fa-dice" title="Другая задача"></i><i class="fa-solid fa-pen" title="Изменить"></i></div></div>');
@@ -2744,9 +5545,25 @@ function renderHolidayCard(st, det) {
         });
         box.find('.nnb-tasks').append(row);
     });
+    const btns = $('<div class="nnb-buttons" style="margin-top: 8px;"></div>');
     const fin = $('<div class="menu_button"><i class="fa-solid fa-flag-checkered"></i> Завершить праздник и получить медаль</div>');
     fin.on('click', () => runHolidayStep({ finish: true }));
-    box.append(fin);
+    const rst = $('<div class="menu_button"><i class="fa-solid fa-rotate-left"></i> Начать заново</div>');
+    rst.on('click', async () => {
+        if (!confirm(`Начать праздник «${hol.name}» заново? Задачи будут перегенерированы.`)) return;
+        delete st.holidayDone[hol.key];
+        st.holiday = null;
+        await commit();
+        runHolidayStep();
+    });
+    const cancel = $('<div class="menu_button" style="color: var(--SmartThemeQuoteColor, #e57373);"><i class="fa-solid fa-trash"></i> Отменить событие</div>');
+    cancel.on('click', async () => {
+        if (!confirm(`Отменить событие «${hol.name}»? Оно будет убрано без штрафов и антимедалей.`)) return;
+        await cancelHoliday(st, hol);
+        toastr.info(`Событие «${hol.name}» отменено`, '📅 Праздники');
+    });
+    btns.append(fin, rst, cancel);
+    box.append(btns);
     det.append(box);
 }
 
@@ -2781,10 +5598,17 @@ function renderChronicleAndMedals(st, det) {
     const med = $('<details class="nnb-section"><summary></summary></details>');
     med.find('summary').text(`🏅 Витрина медалей (${st.medals.length})`);
     [...st.medals].reverse().forEach(m => {
-        const row = $('<div class="nnb-note"><div class="nnb-npc-text"></div><div class="nnb-meta"></div><div class="nnb-npc-status"></div></div>');
+        const row = $('<div class="nnb-note"><div class="nnb-npc-text"></div><div class="nnb-meta"></div><div class="nnb-npc-status"></div><div class="nnb-actions"><i class="fa-solid fa-trash" title="Удалить медаль"></i></div></div>');
         row.find('.nnb-npc-text').text(`${m.emoji || ''} «${m.title}»${m.secret ? ' ✨' : ''}`);
         row.find('.nnb-meta').text(`${TIER_ICONS[m.tier] || ''} ${TIER_NAMES[m.tier] || ''} · ${m.holiday} ${String(m.date || '').slice(0, 4)}`);
         row.find('.nnb-npc-status').text(m.desc);
+        row.find('.fa-trash').on('click', async () => {
+            if (!confirm(`Удалить медаль «${m.title}» (${m.holiday})? Если дата сейчас подходящая, праздник снова станет доступен.`)) return;
+            removeMedal(st, m);
+            await commit();
+            runHolidayStep();
+            toastr.info(`Медаль «${m.title}» удалена`, '🏅 Медали');
+        });
         med.append(row);
     });
     det.append(med);
@@ -2841,6 +5665,52 @@ function bind(id, key, kind = 'text') {
     }
 }
 
+function fillImageSources() {
+    const sel = $('#nnb_img_src');
+    if (!sel.length) return;
+    const cur = settings().imageSource || '';
+    sel.empty().append($('<option value=""></option>').text('Генерация картинок Таверны (Image Generation)'));
+    for (const p of connectionProfiles()) sel.append($('<option></option>').val(p.id).text(`Профиль: ${p.name}`));
+    sel.append($('<option value="openai-images"></option>').text('Картинки OpenAI по ключу (gpt-image)'));
+    if (cur && cur !== 'openai-images' && !connectionProfiles().some(p => p.id === cur)) sel.append($('<option></option>').val(cur).text('(профиль удалён)'));
+    sel.val(cur);
+    $('#nnb_img_api').toggle(cur === 'openai-images');
+}
+
+// 🎬 и 👗 у сообщений: сцена — на каждом сообщении, гардероб — у последнего
+function placeMesButtons() {
+    const on = !!settings().enabled;
+    const st = store();
+    const mes = $('#chat .mes');
+    if (!on || !st) { $('.nnb-mes-btn').remove(); return; }
+    mes.each(function () {
+        const box = $(this).find('.mes_buttons').first();
+        if (box.length && !box.find('.nnb-mes-scene').length) {
+            box.prepend('<div class="mes_button nnb-mes-btn nnb-mes-scene fa-solid fa-image interactable" title="Нарисовать эту сцену" tabindex="0"></div>');
+        }
+    });
+    $('.nnb-mes-ward, .nnb-mes-gacha, .nnb-mes-map, .nnb-mes-actions-btn').remove();
+    const lastMes = mes.last();
+    const lastBox = lastMes.find('.mes_buttons').first();
+    if (lastBox.length && mapOn(st)) lastBox.prepend('<div class="mes_button nnb-mes-btn nnb-mes-map fa-solid fa-map interactable" title="Карта: куда пойти" tabindex="0"></div>');
+    if (lastBox.length && gachaOn(st)) lastBox.prepend('<div class="mes_button nnb-mes-btn nnb-mes-gacha fa-solid fa-dice interactable" title="Находки: испытать удачу" tabindex="0"></div>');
+    if (lastBox.length && st.direction.wardrobe) lastBox.prepend('<div class="mes_button nnb-mes-btn nnb-mes-ward fa-solid fa-shirt interactable" title="Гардероб: подобрать образ" tabindex="0"></div>');
+    if (lastBox.length && settings().actionPrompts && !lastMes.hasClass('is_user')) {
+        const actBtn = $('<div class="mes_button nnb-mes-btn nnb-mes-actions-btn fa-solid fa-lightbulb interactable" title="💡 Подсказать варианты действий" tabindex="0"></div>');
+        actBtn.on('click', function(e) {
+            e.stopPropagation();
+            generateActionPromptsNow();
+        });
+        lastBox.prepend(actBtn);
+    }
+    renderActionPrompts();
+}
+let mesBtnTimer = null;
+function placeMesButtonsSoon() {
+    clearTimeout(mesBtnTimer);
+    mesBtnTimer = setTimeout(placeMesButtons, 150);
+}
+
 // ⏩ у поля ввода и пункты в меню «волшебной палочки»
 function placeFfButton() {
     const on = !!settings().ffButton;
@@ -2858,22 +5728,73 @@ function addMenuItems() {
     if (!menu.length || $('#nnb_menu_ff').length) return;
     const item = (id, icon, text, fn) => $(`<div id="${id}" class="list-group-item flex-container flexGap5 interactable" tabindex="0"><div class="fa-solid ${icon} extensionsMenuExtensionButton"></div><span></span></div>`)
         .find('span').text(text).end().on('click', fn);
+    menu.append(item('nnb_menu_book', 'fa-book-open', 'Блокнот рассказчика', () => openBook()));
     menu.append(item('nnb_menu_ff', 'fa-forward', 'Дальше: следующее событие', fastForward));
+    menu.append(item('nnb_menu_scene', 'fa-image', 'Сцена: нарисовать', () => showScenePopup()));
+    menu.append(item('nnb_menu_map', 'fa-map', 'Карта: куда пойти', () => showMapPopup()));
+    menu.append(item('nnb_menu_gacha', 'fa-dice', 'Находки: испытать удачу', () => startGacha()));
+    menu.append(item('nnb_menu_album', 'fa-images', 'Альбом', () => openBook('album')));
     menu.append(item('nnb_menu_wardrobe', 'fa-shirt', 'Гардероб: подобрать образ', () => {
         const st = store();
-        if (st && !st.direction.wardrobe) return toastr.info('Гардероб выключен в этом чате — включи его в панели Блокнота', 'Блокнот рассказчика');
+        if (st && !st.direction.wardrobe) return toastr.info('Гардероб выключен в этом чате — включи его в блокноте, вкладка «Сюжет»', 'Блокнот рассказчика');
         startWardrobe();
     }));
 }
 
 jQuery(async () => {
     const c = ctx();
+    if ($('#nnb_panel').length) {
+        // уже загружена другая копия блокнота (обычная или бета) — не запускаемся дважды
+        toastr.warning('Включены две версии «Блокнота рассказчика». Оставь одну: выключи другую в Manage extensions и перезагрузи страницу.', 'Блокнот рассказчика', { timeOut: 15000 });
+        return;
+    }
     $('#extensions_settings2').append(PANEL_HTML);
+    $('body').append(BOOK_HTML);
+    $('#nnb_open_book').on('click', () => { try { openBook(); } catch (e) { console.error('[npc_notebook] open', e); toastr.error(escapeHtml(e?.message || e), 'Блокнот не открылся', { escapeHtml: false }); } });
+    bindBook();
+    $(document).on('keydown', e => { if (e.key === 'Escape' && $('#nnb_book').is(':visible') && !$('dialog[open]').length) closeBook(); });
 
     bind('nnb_enabled', 'enabled', 'checkbox');
     bind('nnb_toasts', 'showToasts', 'checkbox');
     bind('nnb_spoilers', 'hideSpoilers', 'checkbox');
     bind('nnb_ff_on', 'ffButton', 'checkbox');
+    $(document).on('click', '.nnb-mes-scene', function (e) {
+        e.stopPropagation();
+        const id = Number($(this).closest('.mes').attr('mesid'));
+        showScenePopup(Number.isInteger(id) ? id : undefined);
+    });
+    $(document).on('click', '.nnb-mes-ward', function (e) {
+        e.stopPropagation();
+        startWardrobe();
+    });
+    $(document).on('click', '.nnb-mes-map', function (e) {
+        e.stopPropagation();
+        showMapPopup();
+    });
+    $(document).on('click', '.nnb-mes-gacha', function (e) {
+        e.stopPropagation();
+        startGacha();
+    });
+    try {
+        const chatEl = document.getElementById('chat');
+        if (chatEl) new MutationObserver(placeMesButtonsSoon).observe(chatEl, { childList: true });
+    } catch (e) { /* ignore */ }
+    bind('nnb_ward_img', 'wardrobeImages', 'checkbox');
+    bind('nnb_img_ref', 'imageRef', 'checkbox');
+    bind('nnb_accents', 'accents', 'checkbox');
+    bind('nnb_action_prompts', 'actionPrompts', 'checkbox');
+    $('#nnb_action_prompts').on('change', renderActionPrompts);
+    fillImageSources();
+    $('.npc-notebook-settings .inline-drawer-toggle').on('click', fillImageSources);
+    $('#nnb_img_src').on('change', function () {
+        settings().imageSource = String($(this).val() || '');
+        saveSettings();
+        $('#nnb_img_api').toggle(settings().imageSource === 'openai-images');
+    });
+    bind('nnb_img_base', 'imgApiBase');
+    bind('nnb_img_key', 'imgApiKey');
+    bind('nnb_img_model', 'imgApiModel');
+    bind('nnb_img_orient', 'imgOrientation');
     $('#nnb_ff_on').on('change', placeFfButton);
     bind('nnb_interval', 'interval', 'number');
     bind('nnb_depth', 'depth', 'number');
@@ -2930,12 +5851,6 @@ jQuery(async () => {
         updateInjection();
         renderPanel();
     });
-    $('#nnb_avoid').on('input', function () {
-        const st = store();
-        if (!st) return;
-        st.direction.avoid = $(this).val();
-        saveDirectionSoon();
-    });
     $('#nnb_lines').on('input', function () {
         const st = store();
         if (!st) return;
@@ -2943,23 +5858,34 @@ jQuery(async () => {
         saveDirectionSoon();
         updateInjection();
     });
-    $('#nnb_wardrobe_on').on('change', function () {
+    $('#nnb_map_on').on('change', function () {
         const st = store();
         if (!st) return;
-        st.direction.wardrobe = $(this).prop('checked');
+        st.direction.map = $(this).prop('checked');
+        placeMesButtons();
+        saveDirectionSoon();
+        renderPanel();
+    });
+    $('#nnb_gacha_on').on('change', function () {
+        const st = store();
+        if (!st) return;
+        st.direction.gacha = $(this).prop('checked');
+        placeMesButtons();
         saveDirectionSoon();
         updateInjection();
         renderPanel();
     });
-    $('#nnb_inspiration').on('input', function () {
+    $('#nnb_wardrobe_on').on('change', function () {
         const st = store();
         if (!st) return;
-        st.direction.inspiration = $(this).val();
+        st.direction.wardrobe = $(this).prop('checked');
+        placeMesButtons();
         saveDirectionSoon();
+        updateInjection();
+        renderPanel();
     });
 
     $('#nnb_think_now').on('click', () => think(true));
-    $('#nnb_ff_panel').on('click', fastForward);
     addMenuItems();
     placeFfButton();
     $('#nnb_add').on('click', async () => {
@@ -2999,11 +5925,16 @@ jQuery(async () => {
         if (e) c.eventSource.on(e, () => { updateInjection(); renderPanel(); });
     }
     c.eventSource.on(ev.CHAT_CHANGED, renderDirection);
+    for (const e of ['CHAT_CHANGED', 'MESSAGE_RECEIVED', 'MESSAGE_SENT', 'CHARACTER_MESSAGE_RENDERED', 'USER_MESSAGE_RENDERED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MORE_MESSAGES_LOADED']) {
+        if (ev[e]) c.eventSource.on(ev[e], placeMesButtonsSoon);
+    }
     c.eventSource.on(ev.CHAT_CHANGED, clearFastForward);
+    if (ev.MESSAGE_SENT) c.eventSource.on(ev.MESSAGE_SENT, onMessageSentHint);
     if (ev.GENERATION_STOPPED) c.eventSource.on(ev.GENERATION_STOPPED, clearFastForward);
     if (ev.CHAT_COMPLETION_PROMPT_READY) c.eventSource.on(ev.CHAT_COMPLETION_PROMPT_READY, fixOwnPromptRole);
 
     updateInjection();
     renderPanel();
     renderDirection();
+    placeMesButtons();
 });
